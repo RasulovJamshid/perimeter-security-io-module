@@ -1,0 +1,212 @@
+# ═══════════════════════════════════════════════════════════════════════
+# Bolid Orion Security System Integration Project
+# .gitignore for PC (C/CMake) + ESP32 Firmware (PlatformIO) + Docs
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────────
+# PC Application (C/CMake)
+# ─────────────────────────────────────────────────────────────────────
+
+# CMake build artifacts
+pc/build/
+pc/cmake-build-*/
+pc/CMakeFiles/
+pc/CMakeCache.txt
+pc/cmake_install.cmake
+pc/Makefile
+pc/install_manifest.txt
+pc/compile_commands.json
+
+# Compiled binaries
+pc/*.exe
+pc/*.out
+pc/*.o
+pc/*.obj
+pc/*.a
+pc/*.lib
+pc/*.so
+pc/*.dll
+pc/*.dylib
+
+# ─────────────────────────────────────────────────────────────────────
+# ESP32 Firmware (PlatformIO)
+# ─────────────────────────────────────────────────────────────────────
+
+# PlatformIO build artifacts
+firmware/**/.pio/
+firmware/**/.pioenvs/
+firmware/**/.piolibdeps/
+firmware/**/lib/readme.txt
+
+# PlatformIO cache
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Compiled firmware
+firmware/**/*.bin
+firmware/**/*.elf
+firmware/**/*.hex
+firmware/**/*.map
+
+# ─────────────────────────────────────────────────────────────────────
+# IDE & Editor Files
+# ─────────────────────────────────────────────────────────────────────
+
+# Visual Studio Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# CLion / IntelliJ IDEA
+.idea/
+*.iml
+cmake-build-*/
+
+# Eclipse
+.cproject
+.project
+.settings/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ─────────────────────────────────────────────────────────────────────
+# Operating System Files
+# ─────────────────────────────────────────────────────────────────────
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ─────────────────────────────────────────────────────────────────────
+# Temporary & Log Files
+# ─────────────────────────────────────────────────────────────────────
+
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+
+# Serial port logs
+serial_*.txt
+uart_*.log
+
+# Debug dumps
+*.dump
+*.trace
+
+# ─────────────────────────────────────────────────────────────────────
+# Configuration Files (Sensitive Data)
+# ─────────────────────────────────────────────────────────────────────
+
+# WiFi credentials (if stored in separate files)
+**/wifi_config.h
+**/secrets.h
+**/credentials.h
+
+# MQTT broker credentials
+**/mqtt_config.h
+
+# Encryption keys (if stored separately)
+**/keys.h
+**/orion_keys.txt
+
+# ─────────────────────────────────────────────────────────────────────
+# Documentation Build Artifacts
+# ─────────────────────────────────────────────────────────────────────
+
+# Doxygen output
+docs/html/
+docs/latex/
+docs/doxygen_warnings.txt
+
+# Markdown preview temp files
+docs/**/*.html
+
+# ─────────────────────────────────────────────────────────────────────
+# Hardware Design Files (Optional - uncomment if using KiCad/Eagle)
+# ─────────────────────────────────────────────────────────────────────
+
+# KiCad backup files
+# hardware/**/*-bak
+# hardware/**/*.bak
+# hardware/**/*-cache.lib
+# hardware/**/*.kicad_pcb-bak
+# hardware/**/*.sch-bak
+
+# Eagle backup files
+# hardware/**/*.s#*
+# hardware/**/*.b#*
+
+# Gerber files (usually want to keep these)
+# hardware/**/gerber/
+
+# ─────────────────────────────────────────────────────────────────────
+# Test & Coverage Reports
+# ─────────────────────────────────────────────────────────────────────
+
+# Test results
+test_results/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# ─────────────────────────────────────────────────────────────────────
+# Dependencies (if vendored)
+# ─────────────────────────────────────────────────────────────────────
+
+# Only ignore if you're NOT vendoring dependencies
+# Uncomment if using package managers instead
+# pc/lib/
+# firmware/**/lib/
+
+# ─────────────────────────────────────────────────────────────────────
+# Custom Ignore Patterns
+# ─────────────────────────────────────────────────────────────────────
+
+# Add your custom patterns here
+# Example: ignore specific test hardware configs
+# test_hardware_*.h
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.bz2
+*.xz
+*.zip.*
+*.rar.*
+*.7z.*
+*.tar.*
+*.gz.*
+*.bz2.*
+*.xz.*
