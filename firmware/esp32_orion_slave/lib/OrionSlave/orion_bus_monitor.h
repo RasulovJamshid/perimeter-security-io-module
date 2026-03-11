@@ -197,7 +197,7 @@ private:
     /* Receive buffer + packet framing */
     uint8_t  _rx_buf[ORION_MAX_PACKET];
     size_t   _rx_pos;
-    uint32_t _last_rx_time;
+    uint32_t _last_rx_time;  /* Microseconds (from micros()) - sub-ms precision */
 
     /* Packet direction tracking:
      * On RS-485 we see both master requests and slave responses.

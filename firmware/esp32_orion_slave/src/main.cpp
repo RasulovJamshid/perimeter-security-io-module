@@ -1,8 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <PubSubClient.h>
-#include <ArduinoOTA.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
 #include "orion_bus_monitor.h"
@@ -12,45 +10,16 @@
  *  CONFIGURATION — Edit these values for your setup
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* ─── Feature Enable/Disable Flags ──────────────────────────────────────
- * Disable unused features to maximize performance and reduce memory usage.
- * Serial cable (UART1) is always enabled — it's the primary output.
+/* ─── WiFi Access Point (On-Demand) ────────────────────────────────────
+ * WiFi is OFF by default for maximum performance.
+ * Press debug button → ESP32 creates its own WiFi network (AP mode)
+ * Connect to the AP → access HTTP configuration interface
+ * WiFi stays on until reboot.
  */
-#define ENABLE_WIFI     true   /* WiFi connection (required for MQTT/HTTP/OTA) */
-#define ENABLE_MQTT     true   /* MQTT publishing over WiFi */
-#define ENABLE_HTTP     true   /* HTTP REST API server */
-#define ENABLE_OTA      true   /* Over-the-air firmware updates */
-
-/* WiFi-on-demand mode: WiFi only starts when debug button pressed
- * Set to true to save power and CPU - WiFi stays off until you need it
- * Requires ENABLE_WIFI=true (WiFi code must be compiled in)
- */
-#define WIFI_ON_DEMAND  false  /* true = WiFi off by default, starts on debug button */
-
-/* Performance notes:
- * - Serial-only mode (ENABLE_WIFI=false): ~0.5ms loop time, 100+ devices
- * - WiFi-on-demand (ENABLE_WIFI=true, WIFI_ON_DEMAND=true): ~0.5ms until debug pressed
- * - WiFi+MQTT enabled: ~2-5ms loop time, still handles 60+ devices
- * - All features enabled: ~5-10ms loop time, may miss packets on very busy bus
- */
-
-/* WiFi credentials (only used if ENABLE_WIFI is true) */
-#define WIFI_SSID       "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
-
-/* MQTT broker (optional) */
-#define MQTT_SERVER     "192.168.1.100"
-#define MQTT_PORT       1883
-#define MQTT_USER       ""
-#define MQTT_PASS       ""
-#define MQTT_CLIENT_ID  "orion_gateway"
-
-/* MQTT topics */
-#define MQTT_TOPIC_PREFIX   "orion"
-#define MQTT_TOPIC_SYSTEM   "orion/system"
-#define MQTT_TOPIC_DEVICE   "orion/device"
-#define MQTT_TOPIC_EVENT    "orion/event"
-#define MQTT_TOPIC_ZONE     "orion/zone"
+#define WIFI_AP_SSID      "Orion-Gateway"   /* AP network name */
+#define WIFI_AP_PASSWORD  "orion12345"      /* AP password (min 8 chars) */
+#define WIFI_AP_CHANNEL   6                 /* WiFi channel (1-13) */
+#define HTTP_PORT         80                /* HTTP server port */
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  HARDWARE: ESP32-C3 Super Mini
@@ -63,7 +32,7 @@
 /* Orion bus - configurable parameters (saved to NVS) */
 #define ORION_GLOBAL_KEY  0x00   /* Default encryption key */
 
-/* Protocol timing (can be adjusted via WiFi config) */
+/* Protocol timing (saved to NVS) */
 static uint16_t packet_timeout_ms = 5;      /* Inter-byte timeout for packet framing */
 static uint16_t response_gap_ms = 50;       /* Gap to distinguish request from response */
 static uint16_t device_timeout_ms = 10000;  /* Device offline timeout */
@@ -88,13 +57,6 @@ static uint32_t orion_baud = 9600;  /* Default: 9600, can be changed via config 
  * For production: disconnect USB and use UART0 for external system
  */
 
-/* HTTP REST API port */
-#define HTTP_PORT  80
-
-/* How often to publish full status (ms) */
-#define STATUS_PUBLISH_INTERVAL_MS  10000
-#define EVENT_PUBLISH_INTERVAL_MS   1000
-
 /* Watchdog timeout (seconds) — auto-restarts if ESP32 hangs */
 #define WDT_TIMEOUT_SEC  30
 
@@ -114,16 +76,12 @@ static uint32_t orion_baud = 9600;  /* Default: 9600, can be changed via config 
 /* Debug modes */
 static bool raw_debug_mode = false;      /* Raw packet hex dump */
 static bool verbose_debug_mode = false;  /* Verbose logging to USB serial */
-static bool wifi_on_demand = WIFI_ON_DEMAND;  /* WiFi enabled only when debug button pressed */
-static bool wifi_started = false;       /* Track if WiFi has been started */
 static volatile bool debug_button_pressed = false;  /* ISR flag */
 static unsigned long debug_button_press_time = 0;
 static unsigned long last_debug_stats_print = 0;
 
-/* Runtime feature enable flags (can be toggled via serial commands) */
-static bool mqtt_enabled = ENABLE_MQTT;
-static bool http_enabled = ENABLE_HTTP;
-static bool ota_enabled = ENABLE_OTA;
+/* WiFi AP state */
+static bool wifi_ap_started = false;     /* Track if AP is active */
 
 /* Firmware version */
 #define FW_VERSION  "1.0.0"
@@ -135,29 +93,15 @@ static bool ota_enabled = ENABLE_OTA;
 OrionBusMonitor busMonitor(Serial1, RS485_DE_PIN);
 OrionMaster     busMaster(Serial1, RS485_DE_PIN);
 Preferences prefs;
-
-#if ENABLE_WIFI
-WiFiClient wifiClient;
-#endif
-
-#if ENABLE_MQTT
-PubSubClient mqtt(wifiClient);
-#endif
-
-#if ENABLE_HTTP
 WebServer httpServer(HTTP_PORT);
-#endif
 
-static unsigned long last_status_publish = 0;
-static unsigned long last_event_check = 0;
-static uint8_t last_event_count = 0;
 static unsigned long last_heartbeat = 0;
 static unsigned long last_led_toggle = 0;
 static bool led_state = false;
 static uint32_t boot_count = 0;
 
-/* JSON buffer for large responses */
-static char json_buf[4096];
+/* JSON buffer for serial and HTTP responses */
+static char json_buf[2048];
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  DEBUG BUTTON — ISR and handler
@@ -212,31 +156,23 @@ void handleDebugButton()
             break;
     }
 
-    /* If WiFi-on-demand mode and WiFi not started yet, start WiFi when debug enabled */
-#if ENABLE_WIFI
-    if (wifi_on_demand && !wifi_started && debug_state > 0) {
-        Serial.println("[DEBUG] Starting WiFi for debug access...");
-        setupWiFi();
-        wifi_started = true;
+    /* Start WiFi AP when debug mode enabled (if not already started) */
+    if (!wifi_ap_started && debug_state > 0) {
+        Serial.println("[WiFi] Starting Access Point...");
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD, WIFI_AP_CHANNEL);
         
-        if (WiFi.status() == WL_CONNECTED) {
-#if ENABLE_MQTT
-            if (mqtt_enabled) {
-                mqtt.setServer(MQTT_SERVER, MQTT_PORT);
-                mqtt.setBufferSize(1024);
-            }
-#endif
-#if ENABLE_HTTP
-            if (http_enabled) setupHttpServer();
-#endif
-#if ENABLE_OTA
-            if (ota_enabled) setupOTA();
-#endif
-            Serial.printf("[DEBUG] WiFi connected: %s\n", WiFi.localIP().toString().c_str());
-            Serial1.printf("SYSTEM,WIFI_STARTED,%s\n", WiFi.localIP().toString().c_str());
-        }
+        IPAddress IP = WiFi.softAPIP();
+        Serial.printf("[WiFi] AP started: %s\n", WIFI_AP_SSID);
+        Serial.printf("[WiFi] IP address: %s\n", IP.toString().c_str());
+        Serial.printf("[WiFi] Password: %s\n", WIFI_AP_PASSWORD);
+        Serial1.printf("SYSTEM,WIFI_AP_STARTED,%s,%s\n", WIFI_AP_SSID, IP.toString().c_str());
+        
+        /* Start HTTP configuration server */
+        setupHttpServer();
+        
+        wifi_ap_started = true;
     }
-#endif
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -298,26 +234,16 @@ void printDebugStats()
     Serial.printf("Total packets: %lu\n", (unsigned long)busMonitor.getTotalPackets());
     Serial.printf("CRC errors:    %lu\n", (unsigned long)busMonitor.getCrcErrors());
     Serial.printf("Online devs:   %d\n", busMonitor.getOnlineDeviceCount());
-#if ENABLE_WIFI
-    Serial.printf("WiFi status:   %s\n", WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("WiFi IP:       %s\n", WiFi.localIP().toString().c_str());
-        Serial.printf("WiFi RSSI:     %d dBm\n", WiFi.RSSI());
-#if ENABLE_MQTT
-        Serial.printf("MQTT:          %s (%s)\n", 
-            mqtt_enabled ? "Enabled" : "Disabled",
-            mqtt.connected() ? "Connected" : "Disconnected");
-#endif
-#if ENABLE_HTTP
-        Serial.printf("HTTP:          %s\n", http_enabled ? "Enabled" : "Disabled");
-#endif
-#if ENABLE_OTA
-        Serial.printf("OTA:           %s\n", ota_enabled ? "Enabled" : "Disabled");
-#endif
+    Serial.printf("Mode:          %s\n",
+        busMaster.getMode() == ORION_MODE_MASTER ? "MASTER" : "MONITOR");
+    Serial.printf("Master detect: %s\n",
+        busMaster.isMasterDetected() ? "Yes" : "No");
+    Serial.printf("WiFi AP:       %s\n", wifi_ap_started ? "Active" : "OFF");
+    if (wifi_ap_started) {
+        Serial.printf("AP IP:         %s\n", WiFi.softAPIP().toString().c_str());
+        Serial.printf("AP clients:    %d\n", WiFi.softAPgetStationNum());
     }
-#else
-    Serial.println("WiFi:          Disabled (compile-time)");
-#endif
+    Serial.println("Output:        Serial cable + HTTP (if AP active)");
     Serial.println("================================\n");
 }
 
@@ -327,7 +253,7 @@ void printDebugStats()
 
 /**
  * Called when any device's zone status changes on the Orion bus.
- * Forward the change to MQTT, serial, etc.
+ * Forward the change to external system via serial cable.
  */
 void onStatusChange(uint8_t device_addr, uint8_t zone,
                     uint8_t old_status, uint8_t new_status)
@@ -340,33 +266,6 @@ void onStatusChange(uint8_t device_addr, uint8_t zone,
 
     /* Forward to external system via serial cable */
     Serial1.printf("STATUS,%d,%d,%d,%s\n", device_addr, zone, new_status, new_str);
-
-    /* Forward to MQTT */
-#if ENABLE_MQTT
-    if (mqtt_enabled && mqtt.connected()) {
-        char topic[64];
-        char payload[128];
-
-        /* Per-device/zone topic */
-        snprintf(topic, sizeof(topic), "%s/%d/%d/status",
-                 MQTT_TOPIC_DEVICE, device_addr, zone);
-        snprintf(payload, sizeof(payload),
-                 "{\"device\":%d,\"zone\":%d,\"status\":%d,\"status_str\":\"%s\","
-                 "\"prev\":%d,\"prev_str\":\"%s\"}",
-                 device_addr, zone, new_status, new_str,
-                 old_status, old_str);
-        mqtt.publish(topic, payload);
-
-        /* Alarm-specific topic for easy subscription */
-        if (new_status == ORION_ST_ALARM || new_status == ORION_ST_FIRE_ALARM) {
-            snprintf(topic, sizeof(topic), "%s/%d/alarm", MQTT_TOPIC_DEVICE, device_addr);
-            snprintf(payload, sizeof(payload),
-                     "{\"device\":%d,\"zone\":%d,\"type\":\"%s\"}",
-                     device_addr, zone, new_str);
-            mqtt.publish(topic, payload);
-        }
-    }
-#endif
 }
 
 /**
@@ -383,20 +282,6 @@ void onDeviceOnline(uint8_t device_addr, bool online)
     /* Forward to serial cable */
     Serial1.printf("DEVICE,%d,%s,%d,%s\n", device_addr, state,
                    dev_type, OrionBusMonitor::deviceTypeStr(dev_type));
-
-    /* Forward to MQTT */
-#if ENABLE_MQTT
-    if (mqtt_enabled && mqtt.connected()) {
-        char topic[64];
-        char payload[128];
-        snprintf(topic, sizeof(topic), "%s/%d/online", MQTT_TOPIC_DEVICE, device_addr);
-        snprintf(payload, sizeof(payload),
-                 "{\"device\":%d,\"online\":%s,\"type\":%d,\"type_str\":\"%s\"}",
-                 device_addr, online ? "true" : "false",
-                 dev_type, OrionBusMonitor::deviceTypeStr(dev_type));
-        mqtt.publish(topic, payload, true);
-    }
-#endif
 }
 
 /**
@@ -412,21 +297,6 @@ void onEvent(const orion_bus_event_t *evt)
     /* Forward to serial cable */
     Serial1.printf("EVENT,%d,%d,%d,%s\n",
                    evt->device_addr, evt->zone, evt->event_code, code_str);
-
-    /* Forward to MQTT */
-#if ENABLE_MQTT
-    if (mqtt_enabled && mqtt.connected()) {
-        char topic[64];
-        char payload[128];
-        snprintf(topic, sizeof(topic), "%s/%d", MQTT_TOPIC_EVENT, evt->device_addr);
-        snprintf(payload, sizeof(payload),
-                 "{\"device\":%d,\"zone\":%d,\"code\":%d,\"code_str\":\"%s\","
-                 "\"extra\":%d}",
-                 evt->device_addr, evt->zone, evt->event_code, code_str,
-                 evt->extra);
-        mqtt.publish(topic, payload);
-    }
-#endif
 }
 
 /**
@@ -553,42 +423,6 @@ void handleExternalSerialInput()
                     delay(100);
                     ESP.restart();
                 }
-#if ENABLE_MQTT
-                else if (strcmp(ext_cmd_buf, "MQTT_ON") == 0) {
-                    mqtt_enabled = true;
-                    Serial1.println("OK,MQTT_ON");
-                    Serial.println("[CMD] MQTT enabled");
-                }
-                else if (strcmp(ext_cmd_buf, "MQTT_OFF") == 0) {
-                    mqtt_enabled = false;
-                    Serial1.println("OK,MQTT_OFF");
-                    Serial.println("[CMD] MQTT disabled");
-                }
-#endif
-#if ENABLE_HTTP
-                else if (strcmp(ext_cmd_buf, "HTTP_ON") == 0) {
-                    http_enabled = true;
-                    Serial1.println("OK,HTTP_ON");
-                    Serial.println("[CMD] HTTP enabled");
-                }
-                else if (strcmp(ext_cmd_buf, "HTTP_OFF") == 0) {
-                    http_enabled = false;
-                    Serial1.println("OK,HTTP_OFF");
-                    Serial.println("[CMD] HTTP disabled");
-                }
-#endif
-#if ENABLE_OTA
-                else if (strcmp(ext_cmd_buf, "OTA_ON") == 0) {
-                    ota_enabled = true;
-                    Serial1.println("OK,OTA_ON");
-                    Serial.println("[CMD] OTA enabled");
-                }
-                else if (strcmp(ext_cmd_buf, "OTA_OFF") == 0) {
-                    ota_enabled = false;
-                    Serial1.println("OK,OTA_OFF");
-                    Serial.println("[CMD] OTA disabled");
-                }
-#endif
                 /* ─── Mode switching commands ─────────────────── */
                 else if (strcmp(ext_cmd_buf, "MASTER_ON") == 0) {
                     if (busMaster.switchToMaster()) {
@@ -701,18 +535,24 @@ void handleExternalSerialInput()
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- *  HTTP REST API — For direct queries over WiFi
+ *  HTTP SERVER — Configuration interface (WiFi AP mode)
  * ═══════════════════════════════════════════════════════════════════════ */
 
 void handleHttpRoot()
 {
     httpServer.send(200, "text/html",
-        "<html><head><title>Orion Gateway</title></head><body>"
+        "<html><head><title>Orion Gateway Config</title>"
+        "<style>body{font-family:Arial;margin:40px;background:#f0f0f0;}"
+        "h1{color:#333;}a{display:block;margin:10px 0;padding:10px;background:#007bff;"
+        "color:white;text-decoration:none;border-radius:5px;text-align:center;}"
+        "a:hover{background:#0056b3;}</style></head><body>"
         "<h1>Orion RS-485 Gateway</h1>"
-        "<p><a href='/api/status'>System Status (JSON)</a></p>"
-        "<p><a href='/api/devices'>Online Devices</a></p>"
-        "<p><a href='/api/events'>Recent Events</a></p>"
-        "<p><a href='/api/device/1'>Device 1 Detail</a></p>"
+        "<p>Firmware: " FW_VERSION "</p>"
+        "<p>Mode: <span id='mode'>Loading...</span></p>"
+        "<a href='/api/status'>System Status (JSON)</a>"
+        "<a href='/api/devices'>Online Devices (JSON)</a>"
+        "<a href='/api/config'>Configuration (JSON)</a>"
+        "<a href='/api/mode'>Mode Status (JSON)</a>"
         "</body></html>");
 }
 
@@ -742,221 +582,61 @@ void handleHttpDevices()
     httpServer.send(200, "application/json", json_buf);
 }
 
-void handleHttpDevice()
-{
-    String uri = httpServer.uri();
-    int addr = uri.substring(uri.lastIndexOf('/') + 1).toInt();
-
-    if (addr < 1 || addr > 127) {
-        httpServer.send(400, "application/json", "{\"error\":\"invalid address\"}");
-        return;
-    }
-
-    busMonitor.deviceToJSON(addr, json_buf, sizeof(json_buf));
-    httpServer.send(200, "application/json", json_buf);
-}
-
-void handleHttpEvents()
-{
-    uint8_t count = busMonitor.getEventCount();
-    int pos = snprintf(json_buf, sizeof(json_buf), "{\"count\":%d,\"events\":[", count);
-
-    for (uint8_t i = 0; i < count; i++) {
-        const orion_bus_event_t *e = busMonitor.getEvent(i);
-        if (!e) continue;
-        if (i > 0) pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, ",");
-        pos += snprintf(json_buf + pos, sizeof(json_buf) - pos,
-            "{\"device\":%d,\"zone\":%d,\"code\":%d,\"code_str\":\"%s\","
-            "\"extra\":%d,\"ms\":%lu}",
-            e->device_addr, e->zone, e->event_code,
-            OrionBusMonitor::statusStr(e->event_code),
-            e->extra, (unsigned long)e->timestamp);
-    }
-
-    snprintf(json_buf + pos, sizeof(json_buf) - pos, "]}");
-    httpServer.send(200, "application/json", json_buf);
-}
-
 void handleHttpConfig()
 {
-    /* GET /api/config - Return current configuration */
     if (httpServer.method() == HTTP_GET) {
         snprintf(json_buf, sizeof(json_buf),
             "{\"packet_timeout_ms\":%d,\"response_gap_ms\":%d,"
             "\"device_timeout_ms\":%d,\"poll_interval_ms\":%d,"
-            "\"orion_baud\":%lu,\"global_key\":%d,"
-            "\"mqtt_enabled\":%s,\"http_enabled\":%s,\"ota_enabled\":%s}",
+            "\"orion_baud\":%lu,\"global_key\":\"0x%02X\","
+            "\"mode\":\"%s\",\"master_detected\":%s}",
             packet_timeout_ms, response_gap_ms, device_timeout_ms, poll_interval_ms,
             orion_baud, busMonitor.getGlobalKey(),
-            mqtt_enabled ? "true" : "false",
-            http_enabled ? "true" : "false",
-            ota_enabled ? "true" : "false");
+            busMaster.getMode() == ORION_MODE_MASTER ? "MASTER" : "MONITOR",
+            busMaster.isMasterDetected() ? "true" : "false");
         httpServer.send(200, "application/json", json_buf);
     }
-    /* POST /api/config - Update configuration */
     else if (httpServer.method() == HTTP_POST) {
         bool changed = false;
         
-        if (httpServer.hasArg("packet_timeout_ms")) {
-            packet_timeout_ms = httpServer.arg("packet_timeout_ms").toInt();
-            changed = true;
-        }
-        if (httpServer.hasArg("response_gap_ms")) {
-            response_gap_ms = httpServer.arg("response_gap_ms").toInt();
-            changed = true;
-        }
-        if (httpServer.hasArg("device_timeout_ms")) {
-            device_timeout_ms = httpServer.arg("device_timeout_ms").toInt();
-            changed = true;
-        }
-        if (httpServer.hasArg("poll_interval_ms")) {
-            poll_interval_ms = httpServer.arg("poll_interval_ms").toInt();
-            changed = true;
-        }
         if (httpServer.hasArg("global_key")) {
-            uint8_t key = httpServer.arg("global_key").toInt();
-            busMonitor.setGlobalKey(key);
-            prefs.begin("orion", false);
-            prefs.putUChar("global_key", key);
-            prefs.end();
-            changed = true;
+            String keyStr = httpServer.arg("global_key");
+            unsigned int key = 0;
+            if (sscanf(keyStr.c_str(), "%x", &key) == 1 && key <= 0xFF) {
+                busMonitor.setGlobalKey((uint8_t)key);
+                busMaster.setGlobalKey((uint8_t)key);
+                busMaster.setMessageKey((uint8_t)key);
+                prefs.begin("orion", false);
+                prefs.putUChar("global_key", (uint8_t)key);
+                prefs.end();
+                changed = true;
+            }
         }
         
         if (changed) {
-            /* Save timing config to NVS */
-            prefs.begin("orion", false);
-            prefs.putUShort("pkt_timeout", packet_timeout_ms);
-            prefs.putUShort("rsp_gap", response_gap_ms);
-            prefs.putUShort("dev_timeout", device_timeout_ms);
-            prefs.putUShort("poll_interval", poll_interval_ms);
-            prefs.end();
-            
-            httpServer.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Config updated and saved\"}");
-            Serial.println("[HTTP] Configuration updated via WiFi");
+            httpServer.send(200, "application/json", 
+                "{\"status\":\"ok\",\"message\":\"Configuration updated\"}");
+            Serial.println("[HTTP] Configuration updated via WiFi AP");
         } else {
-            httpServer.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No valid parameters\"}");
+            httpServer.send(400, "application/json", 
+                "{\"status\":\"error\",\"message\":\"No valid parameters\"}");
         }
     }
 }
-
-/* ─── Master mode HTTP API handlers ──────────────────────────────────── */
 
 void handleHttpMode()
 {
-    if (httpServer.method() == HTTP_GET) {
-        snprintf(json_buf, sizeof(json_buf),
-            "{\"mode\":\"%s\",\"master_detected\":%s,"
-            "\"last_master_traffic_s\":%lu,"
-            "\"auto_polling\":%s,"
-            "\"tx_packets\":%lu,\"tx_errors\":%lu,\"response_timeouts\":%lu}",
-            busMaster.getMode() == ORION_MODE_MASTER ? "MASTER" : "MONITOR",
-            busMaster.isMasterDetected() ? "true" : "false",
-            busMaster.msSinceLastMasterTraffic() / 1000,
-            busMaster.isAutoPolling() ? "true" : "false",
-            busMaster.getTxPackets(),
-            busMaster.getTxErrors(),
-            busMaster.getResponseTimeouts());
-        httpServer.send(200, "application/json", json_buf);
-    }
-    else if (httpServer.method() == HTTP_POST) {
-        if (httpServer.hasArg("mode")) {
-            String mode = httpServer.arg("mode");
-            if (mode == "MASTER" || mode == "master") {
-                if (busMaster.switchToMaster()) {
-                    httpServer.send(200, "application/json",
-                        "{\"status\":\"ok\",\"mode\":\"MASTER\"}");
-                } else {
-                    httpServer.send(409, "application/json",
-                        "{\"status\":\"error\",\"message\":\"C2000M master detected on bus\"}");
-                }
-            } else if (mode == "MONITOR" || mode == "monitor") {
-                busMaster.switchToMonitor();
-                httpServer.send(200, "application/json",
-                    "{\"status\":\"ok\",\"mode\":\"MONITOR\"}");
-            } else {
-                httpServer.send(400, "application/json",
-                    "{\"status\":\"error\",\"message\":\"Invalid mode. Use MASTER or MONITOR\"}");
-            }
-        }
-        if (httpServer.hasArg("auto_polling")) {
-            busMaster.setAutoPolling(httpServer.arg("auto_polling") == "true");
-        }
-    }
-}
-
-void handleHttpMasterCmd()
-{
-    if (busMaster.getMode() != ORION_MODE_MASTER) {
-        httpServer.send(403, "application/json",
-            "{\"error\":\"Not in MASTER mode. POST to /api/mode with mode=MASTER first.\"}");
-        return;
-    }
-
-    String uri = httpServer.uri();
-
-    if (uri == "/api/master/arm") {
-        if (!httpServer.hasArg("addr") || !httpServer.hasArg("zone")) {
-            httpServer.send(400, "application/json", "{\"error\":\"Need addr and zone params\"}");
-            return;
-        }
-        int addr = httpServer.arg("addr").toInt();
-        int zone = httpServer.arg("zone").toInt();
-        int ret = busMaster.cmdArmZone(addr, zone);
-        snprintf(json_buf, sizeof(json_buf),
-            "{\"cmd\":\"arm\",\"addr\":%d,\"zone\":%d,\"result\":%d}", addr, zone, ret);
-        httpServer.send(ret == 0 ? 200 : 500, "application/json", json_buf);
-    }
-    else if (uri == "/api/master/disarm") {
-        if (!httpServer.hasArg("addr") || !httpServer.hasArg("zone")) {
-            httpServer.send(400, "application/json", "{\"error\":\"Need addr and zone params\"}");
-            return;
-        }
-        int addr = httpServer.arg("addr").toInt();
-        int zone = httpServer.arg("zone").toInt();
-        int ret = busMaster.cmdDisarmZone(addr, zone);
-        snprintf(json_buf, sizeof(json_buf),
-            "{\"cmd\":\"disarm\",\"addr\":%d,\"zone\":%d,\"result\":%d}", addr, zone, ret);
-        httpServer.send(ret == 0 ? 200 : 500, "application/json", json_buf);
-    }
-    else if (uri == "/api/master/reset") {
-        if (!httpServer.hasArg("addr") || !httpServer.hasArg("zone")) {
-            httpServer.send(400, "application/json", "{\"error\":\"Need addr and zone params\"}");
-            return;
-        }
-        int addr = httpServer.arg("addr").toInt();
-        int zone = httpServer.arg("zone").toInt();
-        int ret = busMaster.cmdResetAlarm(addr, zone);
-        snprintf(json_buf, sizeof(json_buf),
-            "{\"cmd\":\"reset_alarm\",\"addr\":%d,\"zone\":%d,\"result\":%d}", addr, zone, ret);
-        httpServer.send(ret == 0 ? 200 : 500, "application/json", json_buf);
-    }
-    else if (uri == "/api/master/ping") {
-        if (!httpServer.hasArg("addr")) {
-            httpServer.send(400, "application/json", "{\"error\":\"Need addr param\"}");
-            return;
-        }
-        int addr = httpServer.arg("addr").toInt();
-        int ret = busMaster.cmdPing(addr);
-        snprintf(json_buf, sizeof(json_buf),
-            "{\"cmd\":\"ping\",\"addr\":%d,\"result\":%d}", addr, ret);
-        httpServer.send(ret == 0 ? 200 : 500, "application/json", json_buf);
-    }
-    else if (uri == "/api/master/scan") {
-        int pos = snprintf(json_buf, sizeof(json_buf), "{\"devices\":[");
-        bool first = true;
-        for (uint8_t a = 1; a <= 127; a++) {
-            int ret = busMaster.cmdPing(a);
-            if (ret == 0) {
-                busMaster.cmdReadDeviceInfo(a);
-                if (!first) pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, ",");
-                first = false;
-                pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, "%d", a);
-            }
-            esp_task_wdt_reset();
-        }
-        snprintf(json_buf + pos, sizeof(json_buf) - pos, "]}");
-        httpServer.send(200, "application/json", json_buf);
-    }
+    snprintf(json_buf, sizeof(json_buf),
+        "{\"mode\":\"%s\",\"master_detected\":%s,"
+        "\"last_master_traffic_s\":%lu,"
+        "\"tx_packets\":%lu,\"tx_errors\":%lu,\"response_timeouts\":%lu}",
+        busMaster.getMode() == ORION_MODE_MASTER ? "MASTER" : "MONITOR",
+        busMaster.isMasterDetected() ? "true" : "false",
+        busMaster.msSinceLastMasterTraffic() / 1000,
+        busMaster.getTxPackets(),
+        busMaster.getTxErrors(),
+        busMaster.getResponseTimeouts());
+    httpServer.send(200, "application/json", json_buf);
 }
 
 void setupHttpServer()
@@ -964,110 +644,16 @@ void setupHttpServer()
     httpServer.on("/", handleHttpRoot);
     httpServer.on("/api/status", handleHttpStatus);
     httpServer.on("/api/devices", handleHttpDevices);
-    httpServer.on("/api/events", handleHttpEvents);
     httpServer.on("/api/config", HTTP_GET, handleHttpConfig);
     httpServer.on("/api/config", HTTP_POST, handleHttpConfig);
+    httpServer.on("/api/mode", handleHttpMode);
 
-    /* Master mode API */
-    httpServer.on("/api/mode", HTTP_GET, handleHttpMode);
-    httpServer.on("/api/mode", HTTP_POST, handleHttpMode);
-    httpServer.on("/api/master/arm", HTTP_POST, handleHttpMasterCmd);
-    httpServer.on("/api/master/disarm", HTTP_POST, handleHttpMasterCmd);
-    httpServer.on("/api/master/reset", HTTP_POST, handleHttpMasterCmd);
-    httpServer.on("/api/master/ping", HTTP_GET, handleHttpMasterCmd);
-    httpServer.on("/api/master/scan", HTTP_GET, handleHttpMasterCmd);
-
-    /* Wildcard: /api/device/<addr> */
     httpServer.onNotFound([]() {
-        String uri = httpServer.uri();
-        if (uri.startsWith("/api/device/")) {
-            handleHttpDevice();
-        } else {
-            httpServer.send(404, "application/json", "{\"error\":\"not found\"}");
-        }
+        httpServer.send(404, "application/json", "{\"error\":\"not found\"}");
     });
 
     httpServer.begin();
-    Serial.printf("[HTTP] REST API running on port %d\n", HTTP_PORT);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
- *  WIFI + MQTT
- * ═══════════════════════════════════════════════════════════════════════ */
-
-void setupWiFi()
-{
-    Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\n[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-    } else {
-        Serial.println("\n[WiFi] FAILED — running offline (serial cable only)");
-    }
-}
-
-void reconnectMQTT()
-{
-    if (!mqtt.connected() && WiFi.status() == WL_CONNECTED) {
-        Serial.print("[MQTT] Connecting...");
-        if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS)) {
-            Serial.println(" connected!");
-
-            char msg[128];
-            snprintf(msg, sizeof(msg),
-                     "{\"gateway\":\"orion_bridge\",\"ip\":\"%s\",\"uptime\":%lu}",
-                     WiFi.localIP().toString().c_str(), millis() / 1000);
-            mqtt.publish(MQTT_TOPIC_SYSTEM, msg, true);
-        } else {
-            Serial.printf(" failed (rc=%d)\n", mqtt.state());
-        }
-    }
-}
-
-/**
- * Publish full system status periodically via MQTT.
- */
-void publishSystemStatus()
-{
-    if (!mqtt.connected()) return;
-
-    unsigned long now = millis();
-    if (now - last_status_publish < STATUS_PUBLISH_INTERVAL_MS) return;
-    last_status_publish = now;
-
-    /* Publish individual device statuses */
-    uint8_t addrs[ORION_MAX_DEVICES];
-    uint8_t count = busMonitor.getOnlineDevices(addrs, ORION_MAX_DEVICES);
-
-    for (uint8_t i = 0; i < count; i++) {
-        char topic[64];
-        snprintf(topic, sizeof(topic), "%s/%d/state", MQTT_TOPIC_DEVICE, addrs[i]);
-
-        char payload[512];
-        busMonitor.deviceToJSON(addrs[i], payload, sizeof(payload));
-        mqtt.publish(topic, payload);
-    }
-
-    /* Publish system summary */
-    char summary[256];
-    snprintf(summary, sizeof(summary),
-        "{\"online_devices\":%d,\"total_packets\":%lu,\"crc_errors\":%lu,"
-        "\"uptime\":%lu,\"free_heap\":%lu}",
-        count,
-        (unsigned long)busMonitor.getTotalPackets(),
-        (unsigned long)busMonitor.getCrcErrors(),
-        millis() / 1000,
-        (unsigned long)ESP.getFreeHeap());
-    mqtt.publish(MQTT_TOPIC_SYSTEM, summary);
+    Serial.printf("[HTTP] Server running at http://%s/\n", WiFi.softAPIP().toString().c_str());
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1128,10 +714,11 @@ void updateLEDs()
         }
     }
 
-    /* DEBUG LED - mode and debug indicator:
-     *   Fast blink (100ms) = MASTER mode active
-     *   Solid ON           = debug mode active (raw or verbose)
-     *   OFF                = MONITOR mode, no debug
+    /* DEBUG LED - mode, debug, and WiFi AP indicator:
+     *   Fast blink (100ms)  = MASTER mode active
+     *   Slow blink (500ms)  = WiFi AP active
+     *   Solid ON            = debug mode active (raw or verbose)
+     *   OFF                 = MONITOR mode, no debug, no WiFi
      */
     if (busMaster.getMode() == ORION_MODE_MASTER) {
         static unsigned long last_master_led = 0;
@@ -1141,35 +728,17 @@ void updateLEDs()
             master_led_state = !master_led_state;
             digitalWrite(DEBUG_LED_PIN, master_led_state ? HIGH : LOW);
         }
+    } else if (wifi_ap_started) {
+        static unsigned long last_wifi_led = 0;
+        static bool wifi_led_state = false;
+        if (now - last_wifi_led > 500) {
+            last_wifi_led = now;
+            wifi_led_state = !wifi_led_state;
+            digitalWrite(DEBUG_LED_PIN, wifi_led_state ? HIGH : LOW);
+        }
     } else {
         digitalWrite(DEBUG_LED_PIN, (raw_debug_mode || verbose_debug_mode) ? HIGH : LOW);
     }
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
- *  OTA — Over-The-Air firmware updates (via WiFi)
- * ═══════════════════════════════════════════════════════════════════════ */
-
-void setupOTA()
-{
-    ArduinoOTA.setHostname("orion-gateway");
-    ArduinoOTA.onStart([]() {
-        Serial.println("[OTA] Update starting...");
-        Serial1.println("SYSTEM,OTA_START");
-    });
-    ArduinoOTA.onEnd([]() {
-        Serial.println("[OTA] Update complete! Rebooting...");
-        Serial1.println("SYSTEM,OTA_DONE");
-    });
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("[OTA] Progress: %u%%\r", (progress / (total / 100)));
-    });
-    ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("[OTA] Error[%u]\n", error);
-        Serial1.printf("SYSTEM,OTA_ERROR,%u\n", error);
-    });
-    ArduinoOTA.begin();
-    Serial.println("[OTA] Ready (hostname: orion-gateway)");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1244,64 +813,19 @@ void setup()
     });
     busMaster.begin();
 
-    /* WiFi + MQTT + HTTP + OTA (optional) */
-#if ENABLE_WIFI
-    if (!wifi_on_demand) {
-        /* Start WiFi immediately if not in on-demand mode */
-        setupWiFi();
-        wifi_started = true;
-
-        if (WiFi.status() == WL_CONNECTED) {
-#if ENABLE_MQTT
-            if (mqtt_enabled) {
-                mqtt.setServer(MQTT_SERVER, MQTT_PORT);
-                mqtt.setBufferSize(1024);
-            }
-#endif
-#if ENABLE_HTTP
-            if (http_enabled) setupHttpServer();
-#endif
-#if ENABLE_OTA
-            if (ota_enabled) setupOTA();
-#endif
-        }
-    } else {
-        /* WiFi-on-demand mode: WiFi stays off until debug button pressed */
-        Serial.println("[WiFi] On-demand mode - press debug button to start WiFi");
-    }
-#endif
-
     /* Watchdog timer — auto-restart if ESP32 hangs */
     esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
     esp_task_wdt_add(NULL);
 
     /* Send boot notification to external system via serial cable */
-#if ENABLE_WIFI
-    if (wifi_on_demand && !wifi_started) {
-        Serial1.printf("BOOT,%s,%lu,wifi_on_demand\n", FW_VERSION, boot_count);
-    } else {
-        Serial1.printf("BOOT,%s,%lu,%s\n",
-            FW_VERSION, boot_count,
-            WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "no_wifi");
-    }
-#else
-    Serial1.printf("BOOT,%s,%lu,serial_only\n", FW_VERSION, boot_count);
-#endif
+    Serial1.printf("BOOT,%s,%lu,wifi_ap_on_demand\n", FW_VERSION, boot_count);
 
     Serial.println("\n[READY] Listening to Orion bus (MONITOR mode)...");
-    Serial.print("  Outputs: Serial cable (UART1)");
-#if ENABLE_MQTT
-    if (mqtt_enabled) Serial.print(" + MQTT");
-#endif
-#if ENABLE_HTTP
-    if (http_enabled) Serial.print(" + HTTP");
-#endif
-#if ENABLE_OTA
-    if (ota_enabled) Serial.print(" + OTA");
-#endif
-    Serial.println();
+    Serial.println("  Output: Serial cable (primary)");
+    Serial.println("  WiFi AP: OFF (press debug button to start)");
     Serial.printf("  Watchdog: %ds timeout\n", WDT_TIMEOUT_SEC);
-    Serial.printf("  Debug button: GPIO%d (press to cycle debug modes)\n", DEBUG_BUTTON_PIN);
+    Serial.printf("  Debug button: GPIO%d (press to enable debug + WiFi AP)\n", DEBUG_BUTTON_PIN);
+    Serial.printf("  Mode switch: GPIO%d (toggle MONITOR/MASTER)\n", MODE_SWITCH_PIN);
     Serial.println("  Mode commands: MASTER_ON, MASTER_OFF, MASTER_STATUS");
     Serial.println("  Master cmds:   ARM,addr,zone  DISARM,addr,zone  SCAN");
     Serial.println("  Send 'VERSION' or 'GET_STATUS' via serial cable\n");
@@ -1346,47 +870,8 @@ void loop()
     /* Priority 6: LED status indicators */
     updateLEDs();
 
-    /* Priority 7: WiFi services (only if enabled) */
-#if ENABLE_WIFI
-    if (WiFi.status() == WL_CONNECTED) {
-#if ENABLE_MQTT
-        /* MQTT */
-        if (mqtt_enabled) {
-            if (!mqtt.connected()) {
-                static unsigned long last_mqtt_attempt = 0;
-                if (millis() - last_mqtt_attempt > 5000) {
-                    last_mqtt_attempt = millis();
-                    reconnectMQTT();
-                }
-            }
-            mqtt.loop();
-            publishSystemStatus();
-        }
-#endif
-
-#if ENABLE_HTTP
-        /* HTTP REST API */
-        if (http_enabled) {
-            httpServer.handleClient();
-        }
-#endif
-
-#if ENABLE_OTA
-        /* OTA firmware update check */
-        if (ota_enabled) {
-            ArduinoOTA.handle();
-        }
-#endif
-
-    } else {
-        /* WiFi lost — try to reconnect every 30 seconds */
-        static unsigned long last_wifi_attempt = 0;
-        if (millis() - last_wifi_attempt > 30000) {
-            last_wifi_attempt = millis();
-            Serial.println("[WiFi] Reconnecting...");
-            WiFi.reconnect();
-        }
+    /* Priority 7: HTTP server (only if WiFi AP is active) */
+    if (wifi_ap_started) {
+        httpServer.handleClient();
     }
-#endif
-    /* If WiFi disabled at compile time, loop runs at maximum speed */
 }

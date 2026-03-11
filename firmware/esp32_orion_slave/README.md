@@ -9,7 +9,9 @@ ESP32-C3 firmware with **dual-mode operation** for the Bolid Orion RS-485 bus:
 
 **Safety first** — starts in MONITOR mode. Automatically detects if С2000М is on the bus and prevents MASTER mode activation while it's present. If С2000М appears while in MASTER mode, immediately falls back to MONITOR.
 
-**Production-ready features**: Watchdog timer, heartbeat monitoring, LED status indicator, OTA firmware updates, raw debug mode, NVS config storage, WiFi-on-demand.
+**WiFi Access Point on-demand** — WiFi OFF by default for maximum performance. Press debug button → ESP32 creates its own WiFi network → connect and access HTTP configuration interface. Serial cable remains the primary output.
+
+**Production-ready features**: Watchdog timer, heartbeat monitoring, LED indicators, physical mode switch, WiFi AP configuration interface, raw debug mode, NVS config storage.
 
 ## What It Does
 
@@ -21,9 +23,7 @@ ESP32-C3 firmware with **dual-mode operation** for the Bolid Orion RS-485 bus:
        │       │       │       │       │
     С2000М  Sig-20P  С2000-4  С2000-2  ESP32-C3 (passive listener)
     master  addr=1   addr=2   addr=3     │
-                                         ├──► Serial cable (UART) ──► External System
-                                         ├──► WiFi + MQTT ──► Home Assistant / Node-RED
-                                         └──► HTTP REST API ──► Any HTTP client
+                                         └──► Serial cable (UART0) ──► External System
 ```
 
 ### MASTER Mode (replaces С2000М — use only when PC master is disconnected)
@@ -37,17 +37,14 @@ ESP32-C3 firmware with **dual-mode operation** for the Bolid Orion RS-485 bus:
                                  ├──► Polls all devices (round-robin)
                                  ├──► Sends commands (arm/disarm/reset)
                                  ├──► Reads events from devices
-                                 └──► Forwards everything to Serial/MQTT/HTTP
+                                 └──► Forwards everything via serial cable
 ```
 
 - **Reads ALL bus traffic** — every request from С2000М, every response from every device
 - **Tracks device states** — online/offline, device type, firmware version, zone statuses
 - **Detects events** — alarms, arm/disarm, tamper, power failures
 - **Auto-detects С2000М** — knows when the real master is present or absent
-- **Three output interfaces**:
-  - **Serial cable (UART1)** — direct wired connection to another system
-  - **MQTT over WiFi** — real-time events + periodic status publishing
-  - **HTTP REST API** — JSON endpoints for on-demand queries and master commands
+- **Serial cable output (UART0)** — direct wired connection to another system
 
 ## Bill of Materials (~$9-10)
 
@@ -87,75 +84,54 @@ See `docs/BOM_ESP32C3_optimized.md` for complete component list.
 | USB-C | Debug serial + power | PC (for programming/monitoring) |
 | 12V input | Main power | Via MP2315 → 3.3V |
 
-## Performance Optimization
+## Performance
 
-The firmware includes **compile-time and runtime flags** to disable optional features for maximum performance.
+This is a **serial-only firmware** — no WiFi, MQTT, HTTP, or OTA overhead.
 
-### Compile-Time Feature Flags
+| Metric | Value |
+|--------|-------|
+| **Loop time** | ~0.3-0.5ms |
+| **CPU usage** | ~5-10% |
+| **Max devices** | 127 (full bus) |
+| **Flash usage** | ~350-400 KB |
+| **RAM usage** | ~30-40 KB |
 
-Edit these at the top of `src/main.cpp`:
+The firmware uses **hybrid UART framing** (length-based + timeout-based with `micros()`) for robust packet detection immune to timing jitter.
 
-```cpp
-#define ENABLE_WIFI     true   /* WiFi connection */
-#define ENABLE_MQTT     true   /* MQTT publishing */
-#define ENABLE_HTTP     true   /* HTTP REST API */
-#define ENABLE_OTA      true   /* OTA firmware updates */
-#define WIFI_ON_DEMAND  false  /* WiFi off until debug button pressed */
+## WiFi Access Point (On-Demand Configuration)
+
+WiFi is **OFF by default** for maximum performance. When you need to configure the device or view status:
+
+### How to Enable WiFi AP
+
+1. **Press the debug button** (GPIO5)
+2. ESP32 creates its own WiFi network: **`Orion-Gateway`**
+3. Connect to the network with password: **`orion12345`**
+4. Open browser and go to: **`http://192.168.4.1`**
+
+### HTTP Configuration Interface
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Web interface with links to all endpoints |
+| `/api/status` | GET | Full system status (JSON) |
+| `/api/devices` | GET | List of online devices (JSON) |
+| `/api/config` | GET | Current configuration (JSON) |
+| `/api/config` | POST | Update configuration (e.g., `global_key=5A`) |
+| `/api/mode` | GET | Current mode and master detection status |
+
+**Example - Change encryption key:**
+```bash
+curl -X POST http://192.168.4.1/api/config -d "global_key=5A"
 ```
 
-**Performance impact:**
+### WiFi AP Behavior
 
-| Configuration | Loop Time | Max Devices | Use Case |
-|---------------|-----------|-------------|----------|
-| Serial only (`ENABLE_WIFI=false`) | ~0.5ms | 100+ | Maximum performance, cable-only |
-| WiFi on-demand (`WIFI_ON_DEMAND=true`) | ~0.5ms | 100+ | Fast until WiFi needed, then press button |
-| WiFi + MQTT | ~2-5ms | 60+ | Typical use case |
-| All features | ~5-10ms | 40+ | Full featured, may miss packets on very busy bus |
-
-**When to use each mode:**
-- **`ENABLE_WIFI=false`**: No WiFi at all, serial cable only, smallest binary
-- **`WIFI_ON_DEMAND=true`**: WiFi available but off by default, starts when you press debug button
-- **`ENABLE_WIFI=true, WIFI_ON_DEMAND=false`**: WiFi always on (default)
-
-### WiFi-On-Demand Mode
-
-**Best of both worlds**: Maximum performance normally, WiFi available when you need it.
-
-**How it works:**
-1. Set `WIFI_ON_DEMAND true` in `main.cpp`
-2. ESP32 boots with WiFi **off** → runs at maximum speed (~0.5ms loop)
-3. Press debug button → WiFi starts automatically
-4. Access MQTT, HTTP API, OTA updates
-5. WiFi stays on until reboot
-
-**Use cases:**
-- **Field deployment**: Run fast normally, enable WiFi for remote debugging
-- **Battery-powered**: Save power, only use WiFi when needed
-- **Large systems**: Reduce CPU load, enable WiFi only for configuration changes
-
-### Runtime Feature Control
-
-Even with features compiled in, you can disable them at runtime via serial commands:
-
-| Command | Action |
-|---------|--------|
-| `MQTT_ON` | Enable MQTT publishing |
-| `MQTT_OFF` | Disable MQTT publishing (saves CPU) |
-| `HTTP_ON` | Enable HTTP REST API |
-| `HTTP_OFF` | Disable HTTP REST API |
-| `OTA_ON` | Enable OTA firmware updates |
-| `OTA_OFF` | Disable OTA updates |
-
-**Example:**
-```
-# Disable MQTT to reduce CPU load
-MQTT_OFF
-→ OK,MQTT_OFF
-
-# Re-enable later
-MQTT_ON
-→ OK,MQTT_ON
-```
+- **WiFi starts** when debug button pressed (any debug mode)
+- **WiFi stays on** until device reboot
+- **LED indicator**: Debug LED slow blink (500ms) when AP active
+- **Default IP**: `192.168.4.1` (standard ESP32 AP address)
+- **Performance impact**: Minimal (~0.5-1ms added to loop when HTTP requests active)
 
 ## Dual-Mode Operation (MONITOR / MASTER)
 
@@ -181,7 +157,7 @@ The firmware supports two operating modes in a single project:
 2. **Master detection** — monitors bus for С2000М request packets
 3. **Refuses MASTER switch** — if С2000М traffic seen within last 30 seconds
 4. **Emergency fallback** — if С2000М traffic detected while in MASTER mode, immediately switches back to MONITOR (prevents bus collisions)
-5. **Mode change notifications** — sent to serial and MQTT when mode changes
+5. **Mode change notifications** — sent to serial cable when mode changes
 
 ### Physical Mode Switch (Hardware)
 
@@ -263,42 +239,16 @@ MASTER_OFF
 → OK,MASTER_OFF
 ```
 
-### Master Mode HTTP API (WiFi)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/mode` | GET | Get current mode and master detection status |
-| `/api/mode` | POST | Switch mode (`mode=MASTER` or `mode=MONITOR`) |
-| `/api/master/arm?addr=X&zone=Y` | POST | Arm zone (MASTER only) |
-| `/api/master/disarm?addr=X&zone=Y` | POST | Disarm zone (MASTER only) |
-| `/api/master/reset?addr=X&zone=Y` | POST | Reset alarm (MASTER only) |
-| `/api/master/ping?addr=X` | GET | Ping device (MASTER only) |
-| `/api/master/scan` | GET | Scan entire bus (MASTER only) |
-
-**Examples:**
-```bash
-# Check mode
-curl http://192.168.1.50/api/mode
-→ {"mode":"MONITOR","master_detected":false,"last_master_traffic_s":120,...}
-
-# Switch to MASTER
-curl -X POST http://192.168.1.50/api/mode -d "mode=MASTER"
-→ {"status":"ok","mode":"MASTER"}
-
-# Arm zone 1 on device 5
-curl -X POST "http://192.168.1.50/api/master/arm?addr=5&zone=1"
-→ {"cmd":"arm","addr":5,"zone":1,"result":0}
-```
-
-### LED Indicators (Dual-Mode)
+### LED Indicators
 
 | LED | State | Meaning |
 |-----|-------|---------|
 | **Status (green)** | Fast blink (200ms) | Devices online, bus active |
 | **Status (green)** | Slow blink (1000ms) | No devices found yet |
 | **Status (green)** | Solid ON | Alarm detected |
-| **Debug (red)** | OFF | MONITOR mode, no debug |
-| **Debug (red)** | Solid ON | Debug mode active |
+| **Debug (red)** | OFF | MONITOR mode, no debug, WiFi OFF |
+| **Debug (red)** | Solid ON | Debug mode active (raw/verbose) |
+| **Debug (red)** | Slow blink (500ms) | **WiFi AP active** |
 | **Debug (red)** | Fast blink (100ms) | **MASTER mode active** |
 
 ## Configuration
@@ -306,22 +256,28 @@ curl -X POST "http://192.168.1.50/api/master/arm?addr=5&zone=1"
 Edit the defines at the top of `src/main.cpp`:
 
 ```cpp
-/* WiFi (optional — works without it via serial cable) */
-#define WIFI_SSID       "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
-
-/* MQTT broker (optional) */
-#define MQTT_SERVER     "192.168.1.100"
-#define MQTT_PORT       1883
+/* WiFi Access Point (on-demand) */
+#define WIFI_AP_SSID      "Orion-Gateway"   /* AP network name */
+#define WIFI_AP_PASSWORD  "orion12345"      /* AP password (min 8 chars) */
+#define WIFI_AP_CHANNEL   6                 /* WiFi channel (1-13) */
 
 /* Orion bus */
 #define ORION_GLOBAL_KEY  0x00   /* Set to your system's encryption key */
 
-/* External serial cable */
-#define EXT_SERIAL_TX_PIN  25
-#define EXT_SERIAL_RX_PIN  26
+/* RS-485 pins (UART1) */
+#define RS485_TX_PIN   7     /* GPIO7 - UART1 TX */
+#define RS485_RX_PIN   6     /* GPIO6 - UART1 RX */
+#define RS485_DE_PIN   2     /* GPIO2 - MAX3485 DE+RE */
+
+/* External serial cable (UART0) */
+#define EXT_SERIAL_TX_PIN  21   /* GPIO21 */
+#define EXT_SERIAL_RX_PIN  20   /* GPIO20 */
 #define EXT_SERIAL_BAUD    115200
 ```
+
+The encryption key can also be changed at runtime via:
+- Serial command: `SET_KEY,5A`
+- HTTP API: `POST /api/config` with `global_key=5A`
 
 ## Building & Flashing
 

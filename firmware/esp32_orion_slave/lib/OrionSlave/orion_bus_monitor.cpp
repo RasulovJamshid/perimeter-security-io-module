@@ -1,6 +1,32 @@
 #include "orion_bus_monitor.h"
 
-#define INTER_BYTE_TIMEOUT_MS   5
+/* ═══════════════════════════════════════════════════════════════════════
+ *  UART FRAMING & TIMING
+ * ═══════════════════════════════════════════════════════════════════════
+ * 
+ * Hybrid Framing Approach (Length-based + Timeout-based):
+ * 
+ * 1. LENGTH-BASED (Primary):
+ *    - Orion protocol: [addr][len][payload...][crc]
+ *    - Once we receive addr+len bytes, we know exact packet size
+ *    - Process immediately when buffer reaches expected_total bytes
+ *    - Result: Zero latency, no waiting for timeout
+ * 
+ * 2. TIMEOUT-BASED (Fallback):
+ *    - If 5ms silence detected on bus, process whatever is in buffer
+ *    - Uses micros() instead of millis() for sub-millisecond precision
+ *    - Immune to FreeRTOS scheduler jitter (mqtt.publish(), WiFi tasks)
+ *    - At 9600 baud: 1 byte = ~1.04ms, so 5ms is safe frame boundary
+ * 
+ * Benefits:
+ * - Instant packet processing (no 5ms wait for valid packets)
+ * - Robust against timing jitter from WiFi/MQTT tasks
+ * - Handles malformed packets gracefully via timeout
+ * - Dramatically improved response time in MASTER mode
+ * 
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+#define INTER_BYTE_TIMEOUT_US   5000  /* 5ms in microseconds - more precise than millis() */
 #define REQUEST_RESPONSE_GAP_MS 50
 #define DEFAULT_OFFLINE_MS      30000
 
@@ -50,10 +76,12 @@ void OrionBusMonitor::setGlobalKey(uint8_t key)
 
 void OrionBusMonitor::poll()
 {
-    uint32_t now = millis();
+    uint32_t now_us = micros();  /* Use micros() for sub-millisecond precision */
+    uint32_t now_ms = millis();  /* Still need millis() for offline check */
 
-    /* Inter-byte timeout: complete packet candidate */
-    if (_rx_pos > 0 && (now - _last_rx_time) > INTER_BYTE_TIMEOUT_MS) {
+    /* Timeout-based framing: detect end of packet by silence on bus
+     * Using micros() instead of millis() to avoid FreeRTOS scheduler jitter */
+    if (_rx_pos > 0 && (now_us - _last_rx_time) > INTER_BYTE_TIMEOUT_US) {
         if (_rx_pos >= 3) {
             processPacket(_rx_buf, _rx_pos);
         }
@@ -63,16 +91,30 @@ void OrionBusMonitor::poll()
     /* Read available bytes from bus */
     while (_serial.available()) {
         if (_rx_pos >= ORION_MAX_PACKET) {
-            _rx_pos = 0;
+            _rx_pos = 0;  /* Buffer overflow protection */
         }
         _rx_buf[_rx_pos++] = _serial.read();
-        _last_rx_time = millis();
+        _last_rx_time = micros();  /* Update with microsecond precision */
+
+        /* Hybrid framing: Length-based packet detection
+         * Orion protocol: [addr][len][payload...][crc]
+         * If we have addr+len bytes, and buffer matches expected length,
+         * process immediately without waiting for timeout.
+         * This dramatically improves response time and eliminates timing jitter issues.
+         */
+        if (_rx_pos >= 2) {
+            uint8_t expected_total = 2 + _rx_buf[1];  /* addr + len + payload + crc */
+            if (_rx_pos == expected_total && expected_total >= 3) {
+                processPacket(_rx_buf, _rx_pos);
+                _rx_pos = 0;  /* Reset immediately - no timeout wait needed */
+            }
+        }
     }
 
     /* Periodic: check for devices gone offline */
     static uint32_t last_offline_check = 0;
-    if (now - last_offline_check > 5000) {
-        last_offline_check = now;
+    if (now_ms - last_offline_check > 5000) {
+        last_offline_check = now_ms;
         checkOfflineDevices();
     }
 }

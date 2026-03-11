@@ -1,17 +1,78 @@
-# ESP32-C3 Super Mini Gateway — Final Schematic
+# ESP32-C3 Super Mini Gateway — Optimized Schematic (USB-Powered)
 
-## Optimized Design with MP2315 Buck Converter
+## Design Overview
+
+**Single USB-C cable** provides power, programming, and debug serial. No external PSU needed.
 
 **Key Features:**
-- ESP32-C3 Super Mini (built-in USB-C, $1.50)
-- MP2315 buck converter (95% efficient, tiny footprint)
-- MAX3485 RS-485 transceiver (3.3V compatible)
-- Transistor-driven LEDs
-- Separate debug button (GPIO5)
-- Complete protection circuits
+- ESP32-C3 Super Mini (built-in USB-C, ~$1.50)
+- ADM2483 isolated RS-485 transceiver (2.5kV galvanic isolation)
+- AMS1117-3.3 LDO regulator for peripherals (from USB 5V)
+- Transistor-driven LED indicators
+- Debug button (GPIO5) + Mode switch (GPIO8)
+- Physical MONITOR/MASTER mode selection
 
-**Board size:** 60x40mm (33% smaller than previous design)
-**Total cost:** ~$9-10 (professional PCB build)
+**Power source:** PC USB (500mA @ 5V)
+**Board size:** 50x35mm (optimized, fewer components)
+**Total cost:** ~$8-9 per unit
+
+---
+
+## Pinout Connection Table
+
+### ESP32-C3 Super Mini — Complete GPIO Assignment
+
+| ESP32 Pin | Direction | Connected To | Wire/Trace | Purpose |
+|-----------|-----------|--------------|------------|---------|
+| **USB-C** | Bidir | PC USB cable | USB cable | Power + programming + debug serial |
+| **5V** | Power Out | AMS1117-3.3 VIN | 1mm trace | USB 5V → external LDO input |
+| **3V3** | Power Out | — | — | ESP32 onboard 3.3V (chip only) |
+| **GND** | Ground | Common GND rail | GND plane | Ground reference for all components |
+| **GPIO2** | Output | ADM2483 DE + RE | signal | RS-485 direction (LOW=receive) |
+| **GPIO3** | Output | R6 (220Ω) → Q1 base | signal | Status LED driver (green) |
+| **GPIO4** | Output | R8 (220Ω) → Q2 base | signal | Debug/Mode LED driver (red) |
+| **GPIO5** | Input | SW2 + R4 (10kΩ pullup) | signal | Debug button (active LOW) |
+| **GPIO6** | Input | ADM2483 RO (RXD) | signal | RS-485 receive data |
+| **GPIO7** | Output | ADM2483 DI (TXD) | signal | RS-485 transmit data |
+| **GPIO8** | Input | SW3 + R11 (10kΩ pullup) | signal | Mode switch (LOW=MONITOR) |
+| **GPIO18** | Bidir | USB-C D- | USB | Built-in USB serial (auto) |
+| **GPIO19** | Bidir | USB-C D+ | USB | Built-in USB serial (auto) |
+| **GPIO20** | Input | J1 Pin 3 (Ext RX) | signal | External serial cable RX |
+| **GPIO21** | Output | J1 Pin 2 (Ext TX) | signal | External serial cable TX |
+| **EN** | Input | R3 (10kΩ pullup) + SW1 | signal | Hardware reset (active LOW) |
+
+### ADM2483 Isolated RS-485 Module — Pin Connections
+
+| Module Pin | Connected To | Purpose |
+|------------|--------------|---------|
+| **VCC** | 3.3V_EXT (AMS1117 output) | Logic-side power (3.3V) |
+| **GND** | ESP32 GND | Logic-side ground |
+| **RXD (RO)** | ESP32 GPIO6 | Received data → ESP32 |
+| **TXD (DI)** | ESP32 GPIO7 | ESP32 → data to transmit |
+| **DE** | ESP32 GPIO2 | Driver enable (HIGH=transmit) |
+| **RE** | ESP32 GPIO2 (tied to DE) | Receiver enable (LOW=receive) |
+| **A** | J2 Pin 1 (Orion bus A) | RS-485 differential + (isolated) |
+| **B** | J2 Pin 2 (Orion bus B) | RS-485 differential − (isolated) |
+| **GND_ISO** | — (floating or Orion GND) | Isolated-side ground |
+
+### AMS1117-3.3 LDO — Pin Connections
+
+| LDO Pin | Connected To | Purpose |
+|---------|--------------|---------|
+| **VIN** | ESP32 5V pin | Input from USB 5V |
+| **VOUT** | 3.3V_EXT rail | Regulated 3.3V for peripherals |
+| **GND** | Common GND | Ground |
+
+### 3.3V_EXT Power Rail — Loads
+
+| Component | Current (mA) | Connection |
+|-----------|-------------|------------|
+| ADM2483 VCC | ~15 | 3.3V_EXT → ADM2483 VCC |
+| Q1 LED circuit (green) | ~10 | 3.3V_EXT → R7 → LED1 → Q1 |
+| Q2 LED circuit (red) | ~10 | 3.3V_EXT → R9 → LED2 → Q2 |
+| Power LED (yellow) | ~3 | 3.3V_EXT → R10 → LED3 → GND |
+| Pull-up resistors | ~1 | R3, R4, R11 to 3.3V_EXT |
+| **Total** | **~39 mA** | AMS1117 capacity: 1000mA |
 
 ---
 
@@ -19,136 +80,112 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                          POWER SUPPLY SECTION (MP2315)                              │
+│                    POWER MANAGEMENT (USB 5V → AMS1117 → 3.3V_EXT)                  │
 │                                                                                     │
-│  12V from Orion PSU                                                                 │
-│      │                                                                               │
-│      ├──[F1: 500mA PTC]──┬──[D1: 1N5819]──┬──[D3: SMBJ13A TVS]──┐                 │
-│      │                   │                 │                      │                 │
-│     GND                  │                GND                     │                 │
-│                          │                                        │                 │
-│                     [C1: 100µF/25V]                               │                 │
-│                          │                                        │                 │
-│                         GND                                       │                 │
-│                                                                   │                 │
-│                     ┌─────────────────────────────────────────────┘                 │
-│                     │                                                               │
-│                     │    ┌──────────────────────────────────┐                      │
-│                     │    │     MP2315 Module (4-pin)        │                      │
-│                     │    │     12V→3.3V Buck Converter      │                      │
-│                     │    │     17x11mm Pre-assembled        │                      │
-│                     │    │                                  │                      │
-│                     ├────┤ IN  (12V input)                  │                      │
-│                     │    │                                  │                      │
-│                    12V   │ EN  (enable) ─────────────────────┼──── 12V (always on) │
-│                          │                                  │                      │
-│                          │ OUT (3.3V output) ────────────────┼──────┬──────────┐   │
-│                          │                                  │      │          │   │
-│                          │ GND (ground) ─────────────────────┼──────┼──────────┼─── GND
-│                          │                                  │      │          │   │
-│                          └──────────────────────────────────┘      │          │   │
-│                                                                    │          │   │
-│                     Output Filtering (optional):                   │          │   │
-│                     ┌──[C2: 100µF/25V]──┬──[C3: 10µF/16V]──┐     │          │   │
-│                     │                    │                  │     │          │   │
-│                    GND                  GND                GND    │          │   │
-│                                                                   │          │   │
-│                                                                 3.3V ◄───────┴───┘
-│                                                                   │
-└────────────────────────────────────────────────────────────────────────────┼───────┘
-                                                                             │
-┌────────────────────────────────────────────────────────────────────────────┼───────┐
-│                          ESP32-C3 SUPER MINI MODULE                        │       │
-│                                                                            │       │
-│                        ┌──────────────────────────────────┐               │       │
-│                        │    ESP32-C3 Super Mini Board     │               │       │
-│                        │    (22.52 x 18mm)                │               │       │
-│                        │                                  │               │       │
-│   3.3V ────────────────┤ 3V3                              │               │       │
-│                        │                                  │               │       │
-│   3.3V ──[C6: 10µF]────┤ 3V3 (additional decoupling)     │               │       │
-│          │             │                                  │               │       │
-│         GND            │                                  │               │       │
-│                        │                                  │               │       │
-│   [C7-C9: 100nF each]  │  (3x decoupling caps near pins) │               │       │
-│                        │                                  │               │       │
-│   ┌─[R3: 10kΩ]─3.3V   │                                  │               │       │
-│   │                    │                                  │               │       │
-│   └────[SW1: Reset]────┤ EN (Enable/Reset)               │               │       │
-│        │               │                                  │               │       │
-│       GND              │                                  │               │       │
-│                        │                                  │               │       │
-│   ┌─[R4: 10kΩ]─3.3V   │                                  │               │       │
-│   │                    │                                  │               │       │
-│   └────[SW2: Debug]────┤ GPIO5 (Debug Button)            │               │       │
-│        │               │                                  │               │       │
-│   [C10: 100nF]         │                                  │               │       │
-│        │               │                                  │               │       │
-│       GND              │                                  │               │       │
-│                        │                                  │               │       │
-│                        │  GPIO6 (RX) ◄────────────────────┼───── From MAX3485 RO  │
-│                        │  GPIO7 (TX) ──────────────────────┼────► To MAX3485 DI    │
-│                        │  GPIO2 (DE/RE) ───────────────────┼────► To MAX3485 DE+RE │
-│                        │                                  │      (held LOW)        │
+│   From ESP32 5V pin (USB 5V)                                                        │
+│        │                                                                            │
+│   [C12: 10µF/16V ceramic]                                                           │
+│        │                                                                            │
+│        ├──────────────────────────────────────────────────────┐                     │
+│        │                                                      │                     │
+│        │         ┌──────────────────────────────┐             │                     │
+│        │         │    AMS1117-3.3 (SOT-223)     │             │                     │
+│        │         │    5V→3.3V LDO Regulator     │             │                     │
+│        │         │                              │             │                     │
+│        ├─────────┤ VIN (5V input)               │             │                     │
+│        │         │                              │             │                     │
+│        │         │ VOUT (3.3V output) ───────────┼─────────────┼──► 3.3V_EXT rail   │
+│        │         │                              │             │         │           │
+│        │         │ GND ──────────────────────────┼──── GND     │    [C13: 22µF]     │
+│        │         │                              │             │         │           │
+│        │         └──────────────────────────────┘             │        GND          │
+│        │                                                      │                     │
+│       GND                                                    GND                    │
+│                                                                                     │
+│   3.3V_EXT powers: ADM2483, LEDs, pull-up resistors (~39mA total)                   │
+│   ESP32 chip powered separately by onboard regulator (~80-200mA)                    │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                          ESP32-C3 SUPER MINI MODULE                                 │
+│                                                                                     │
+│                        ┌──────────────────────────────────┐                        │
+│                        │    ESP32-C3 Super Mini Board     │                        │
+│                        │    (22.52 x 18mm)                │                        │
 │                        │                                  │                        │
-│                        │  GPIO21 (TX) ─────────────────────┼────► External Serial  │
-│                        │  GPIO20 (RX) ◄────────────────────┼───── External Serial  │
+│   USB-C (to PC) ◄──────┤ USB-C (power + serial + prog)   │                        │
+│                        │  (GPIO18/19 USB D-/D+)          │                        │
 │                        │                                  │                        │
-│                        │  GPIO3 ───────────────────────────┼────► Status LED Q1    │
-│                        │  GPIO4 ───────────────────────────┼────► Debug LED Q2     │
+│   To AMS1117 VIN ◄─────┤ 5V  (USB 5V output)             │                        │
 │                        │                                  │                        │
-│                        │  USB-C ◄──────────────────────────┼───── To PC (prog)     │
-│                        │  (GPIO18/19)                     │                        │
+│                        │ 3V3 (onboard reg, ESP32 only)    │                        │
 │                        │                                  │                        │
-│                        │  GND ─────────────────────────────┼────► Common GND       │
+│   Common GND ◄──────────┤ GND                              │                        │
+│                        │                                  │                        │
+│   ┌─[R3: 10kΩ]─3.3V_EXT                                  │                        │
+│   │                    │                                  │                        │
+│   └────[SW1: Reset]────┤ EN (Enable/Reset)               │                        │
+│        │               │                                  │                        │
+│       GND              │                                  │                        │
+│                        │                                  │                        │
+│   ┌─[R4: 10kΩ]─3.3V_EXT                                  │                        │
+│   │                    │                                  │                        │
+│   └────[SW2: Debug]────┤ GPIO5 (Debug Button)            │                        │
+│        │               │                                  │                        │
+│   [C10: 100nF]         │                                  │                        │
+│        │               │                                  │                        │
+│       GND              │                                  │                        │
+│                        │                                  │                        │
+│   ┌─[R11: 10kΩ]─3.3V_EXT                                 │                        │
+│   │                    │                                  │                        │
+│   └──[SW3: SPDT]───────┤ GPIO8 (Mode Switch)             │                        │
+│        │               │  LOW=MONITOR, HIGH=MASTER        │                        │
+│       GND              │                                  │                        │
+│                        │                                  │                        │
+│                        │  GPIO6 (RX) ◄────────────────────┼───── ADM2483 RO       │
+│                        │  GPIO7 (TX) ──────────────────────┼────► ADM2483 DI       │
+│                        │  GPIO2 (DE/RE) ───────────────────┼────► ADM2483 DE+RE    │
+│                        │                                  │                        │
+│                        │  GPIO21 (TX) ─────────────────────┼────► J1: External TX  │
+│                        │  GPIO20 (RX) ◄────────────────────┼───── J1: External RX  │
+│                        │                                  │                        │
+│                        │  GPIO3 ───────────────────────────┼────► R6 → Q1 (LED1)   │
+│                        │  GPIO4 ───────────────────────────┼────► R8 → Q2 (LED2)   │
 │                        │                                  │                        │
 │                        └──────────────────────────────────┘                        │
 │                                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                          RS-485 INTERFACE (MAX3485)                                 │
+│                   RS-485 INTERFACE (ADM2483 Isolated Module)                        │
 │                                                                                     │
-│                        ┌──────────────────────────────────┐                        │
-│                        │         MAX3485                  │                        │
-│                        │        (SOIC-8)                  │                        │
-│                        │                                  │                        │
-│   3.3V ────────────────┤ VCC (Pin 8)                      │                        │
-│                        │                                  │                        │
-│   GND ─────────────────┤ GND (Pin 5)                      │                        │
-│                        │                                  │                        │
-│   From ESP32 GPIO7 ────┤ DI (Pin 4) Data In               │                        │
-│                        │                                  │                        │
-│   To ESP32 GPIO6 ◄─────┤ RO (Pin 1) Receiver Out          │                        │
-│                        │                                  │                        │
-│   From ESP32 GPIO2 ────┤ DE (Pin 3) Driver Enable         │                        │
-│                        │                                  │                        │
-│   From ESP32 GPIO2 ────┤ RE (Pin 2) Receiver Enable       │                        │
-│                        │                                  │                        │
-│                        │                              A ──┼───┬──[D4: TVS]──GND    │
-│                        │                          (Pin 6) │   │                    │
-│                        │                                  │   │                    │
-│                        │                              B ──┼───┼──[D5: TVS]──GND    │
-│                        │                          (Pin 7) │   │                    │
-│                        │                                  │   │                    │
-│                        └──────────────────────────────────┘   │                    │
-│                                                               │                    │
-│                                                          [C11: 100nF]              │
-│                                                               │                    │
-│                                                              GND                   │
-│                                                               │                    │
-│                                                               │                    │
-│   To Orion Bus ◄──────────────────────────────────────────────┴─── A (Pin 1)      │
-│                                                                                    │
-│   To Orion Bus ◄──────────────────────────────────────────────┬─── B (Pin 2)      │
-│                                                               │                    │
-│                                                          [R5: 120Ω]               │
-│                                                          (optional,                │
-│                                                           only if at               │
-│                                                           bus end)                 │
-│                                                               │                    │
-│                                                               A                    │
-│                                                                                    │
+│   ╔═══════════════════════════════════════════════════════════════════╗              │
+│   ║              2.5kV GALVANIC ISOLATION BARRIER                    ║              │
+│   ╚═══════════════════════════════════════════════════════════════════╝              │
+│                                                                                     │
+│   LOGIC SIDE (ESP32 ground domain)    ║    BUS SIDE (Orion ground domain)          │
+│                                        ║                                            │
+│   ┌────────────────────────────────────╫────────────────────────────────┐           │
+│   │      ADM2483 Isolated Module       ║                                │           │
+│   │                                    ║                                │           │
+│   │  3.3V_EXT ────── VCC              ║              A ─────────────────┼──► Orion A│
+│   │                                    ║                                │           │
+│   │  ESP32 GND ────── GND             ║              B ─────────────────┼──► Orion B│
+│   │                                    ║                                │           │
+│   │  ESP32 GPIO6 ◄─── RO (RXD)       ║         GND_ISO ───────────────┼──► Float  │
+│   │                                    ║         (isolated ground)      │           │
+│   │  ESP32 GPIO7 ───► DI (TXD)       ║                                │           │
+│   │                                    ║    Built-in isolated DC-DC     │           │
+│   │  ESP32 GPIO2 ───► DE ─┐           ║    powers bus side internally  │           │
+│   │                       ├── tied    ║                                │           │
+│   │  ESP32 GPIO2 ───► RE ─┘           ║                                │           │
+│   │                                    ║                                │           │
+│   └────────────────────────────────────╫────────────────────────────────┘           │
+│                                        ║                                            │
+│   No TVS diodes needed on bus side —   ║   ADM2483 has built-in ESD protection     │
+│   isolation barrier protects ESP32     ║   ±15kV HBM on bus pins                   │
+│                                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
@@ -156,98 +193,71 @@
 │                                                                                     │
 │   STATUS LED (Green) - GPIO3                                                        │
 │                                                                                     │
-│   From ESP32 GPIO3 ──[R6: 220Ω]───┬──┤ Q1: 2N3904                                  │
-│                                   │    NPN Transistor                              │
-│                                  GND   Emitter                                     │
-│                                       │                                             │
-│                                       │ Collector                                   │
-│                                       ├─── LED1 Cathode (-)                         │
-│                                       │                                             │
-│                                  [R7: 1kΩ]                                          │
-│                                       │                                             │
-│                                   LED1 Anode (+)                                    │
-│                              │   DEBUG BUTTON (separate from BOOT button)                                      │
+│   ESP32 GPIO3 ──[R6: 220Ω]──► Q1 Base (2N3904)                                     │
+│                                    │                                               │
+│                                  Emitter ── GND                                    │
+│                                    │                                               │
+│                                  Collector                                         │
+│                                    │                                               │
+│                               LED1 Cathode (-)                                     │
+│                                    │                                               │
+│                               LED1 Anode (+) ── [R7: 1kΩ] ── 3.3V_EXT             │
+│                                                  (Green, 3mm)                      │
 │                                                                                     │
-│   GPIO5 ──┬──[SW1: Push button]── GND                                              │
-│           │                                                                         │
-│        [R8: 10kΩ pull-up to 3.3V]                                                  │
+│   DEBUG LED (Red) - GPIO4                                                           │
 │                                                                                     │
-│   Press to cycle debug modes: OFF → RAW → VERBOSE → FULL                           │
-│                                                                                     │
-│   MODE SWITCH (MONITOR / MASTER selection)                                         │
-│                                                                                     │
-│   GPIO8 ──┬──[SW2: SPDT toggle switch]──┬── GND (MONITOR position)                │
-│           │                              │                                         │
-│        [R11: 10kΩ pull-up to 3.3V]      └── Open (MASTER position)                │
-│                                                                                     │
-│   Switch DOWN (to GND)  = MONITOR mode (safe, passive listening)                   │
-│   Switch UP   (open)    = MASTER mode (active control, polls devices)              │       │
-│                                   │    NPN Transistor                              │
-│                                  GND   Emitter                                     │
-│                                       │                                             │
-│                                       │ Collector                                   │
-│                                       ├─── LED2 Cathode (-)                         │
-│                                       │                                             │
-│                                  [R9: 1kΩ]                                          │
-│                                       │                                             │
-│                                   LED2 Anode (+)                                    │
-│                                   (Red, 3mm)                                        │
-│                                       │                                             │
-│                                     3.3V                                            │
+│   ESP32 GPIO4 ──[R8: 220Ω]──► Q2 Base (2N3904)                                     │
+│                                    │                                               │
+│                                  Emitter ── GND                                    │
+│                                    │                                               │
+│                                  Collector                                         │
+│                                    │                                               │
+│                               LED2 Cathode (-)                                     │
+│                                    │                                               │
+│                               LED2 Anode (+) ── [R9: 1kΩ] ── 3.3V_EXT             │
+│                                                  (Red, 3mm)                        │
 │                                                                                     │
 │   POWER LED (Yellow) - Always On                                                    │
 │                                                                                     │
-│   3.3V ──[R10: 1kΩ]── LED3 Anode (+) ── LED3 Cathode (-) ── GND                    │
-│                       (Yellow, 3mm)                                                 │
+│   3.3V_EXT ──[R10: 1kΩ]──► LED3 Anode (+) ── LED3 Cathode (-) ── GND              │
+│                              (Yellow, 3mm)                                          │
 │                                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │                          EXTERNAL CONNECTIONS                                       │
 │                                                                                     │
-│   SERIAL CABLE (to external system via UART0)                                       │
+│   USB-C (SINGLE CABLE — power + programming + debug serial)                         │
 │   ┌──────────────────────────────────────┐                                         │
-│   │  J1: 3-pin screw terminal            │                                         │
+│   │  Built into ESP32-C3 Super Mini      │                                         │
 │   │                                      │                                         │
-│   │  Pin 1: GND ◄────────────────────────┼──── Common Ground                       │
-│   │                                      │                                         │
-│   │  Pin 2: TX (from GPIO21) ◄───────────┼──── To external system RX              │
-│   │                                      │                                         │
-│   │  Pin 3: RX (to GPIO20) ──────────────┼──── From external system TX            │
+│   │  Power:  USB 5V → ESP32 + AMS1117    │                                         │
+│   │  Serial: USB CDC (GPIO18/19)         │                                         │
+│   │  Prog:   Firmware upload via USB     │                                         │
 │   │                                      │                                         │
 │   └──────────────────────────────────────┘                                         │
 │                                                                                     │
-│   RS-485 BUS (to Orion system via UART1)                                            │
+│   SERIAL CABLE (to external system — optional, active when USB disconnected)        │
+│   ┌──────────────────────────────────────┐                                         │
+│   │  J1: 3-pin header or screw terminal  │                                         │
+│   │                                      │                                         │
+│   │  Pin 1: GND ◄────────────────────────┼──── Common Ground                       │
+│   │  Pin 2: TX  (from GPIO21) ◄──────────┼──── To external system RX              │
+│   │  Pin 3: RX  (to GPIO20) ─────────────┼──── From external system TX            │
+│   │                                      │                                         │
+│   └──────────────────────────────────────┘                                         │
+│   NOTE: UART0 (GPIO20/21) shared with USB. When USB connected, use USB serial.     │
+│         When USB disconnected, UART0 available on GPIO20/21 for external system.    │
+│                                                                                     │
+│   RS-485 BUS (to Orion system — via ADM2483 isolated module)                        │
 │   ┌──────────────────────────────────────┐                                         │
 │   │  J2: 2-pin screw terminal            │                                         │
 │   │                                      │                                         │
-│   │  Pin 1: A ◄──────────────────────────┼──── To Orion bus A                      │
-│   │                                      │                                         │
-│   │  Pin 2: B ◄──────────────────────────┼──── To Orion bus B                      │
-│   │                                      │                                         │
-│   └──────────────────────────────────────┘                                         │
-│                                                                                     │
-│   POWER INPUT (from Orion PSU or external 12V)                                      │
-│   ┌──────────────────────────────────────┐                                         │
-│   │  J3: 2-pin screw terminal            │                                         │
-│   │                                      │                                         │
-│   │  Pin 1: +12V ◄───────────────────────┼──── 12V supply (9-24V range)            │
-│   │                                      │                                         │
-│   │  Pin 2: GND ◄────────────────────────┼──── Ground                              │
+│   │  Pin 1: A ◄──────────────────────────┼──── Orion bus A (isolated)              │
+│   │  Pin 2: B ◄──────────────────────────┼──── Orion bus B (isolated)              │
 │   │                                      │                                         │
 │   └──────────────────────────────────────┘                                         │
-│                                                                                     │
-│   USB-C PROGRAMMING (built into ESP32-C3 Super Mini)                                │
-│   ┌──────────────────────────────────────┐                                         │
-│   │  USB-C connector on board            │                                         │
-│   │                                      │                                         │
-│   │  Connected to ESP32-C3 GPIO18/19     │                                         │
-│   │  (USB D-/D+)                         │                                         │
-│   │                                      │                                         │
-│   │  Used for firmware upload and        │                                         │
-│   │  serial debugging                    │                                         │
-│   │                                      │                                         │
-│   └──────────────────────────────────────┘                                         │
+│   NOTE: A/B are galvanically isolated from ESP32. Safe ground loop protection.      │
 │                                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -256,53 +266,44 @@
 
 ## Component Reference Table
 
-### Power Supply (MP2315 Circuit)
+### Power Supply (AMS1117-3.3 LDO from USB 5V)
 
-| Ref | Value | Part Number | Package | Voltage/Current | Notes |
-|-----|-------|-------------|---------|-----------------|-------|
-| F1 | 500mA | 0ZCJ0050FF2E | 1812 SMD | 15V | Resettable PTC fuse |
-| D1 | 1N5819 | 1N5819 | DO-41 | 40V, 1A | Reverse polarity protection |
-| D2 | SS34 | SS34 | SMA | 40V, 3A | Freewheeling diode for MP2315 |
-| D3 | SMBJ13A | SMBJ13A | SMB | 13V, 600W | TVS overvoltage protection |
-| U1 | MP2315S | MP2315S | TSOT23-6 | 4.5-24V in, 3.3V out | Buck converter IC |
-| L1 | 22µH | SRN6045-220M | 6x6mm | 3A, DCR<50mΩ | Power inductor |
-| C1 | 100µF | ECA-1EM101 | Radial | 25V | Input bulk capacitor |
-| C2 | 100µF | ECA-1EM101 | Radial | 25V | Output bulk capacitor |
-| C3 | 22µF | CL21A226MAYLNNC | 0805 | 16V, X7R | Output ceramic cap |
-| C4 | 100nF | GRM188R71H104KA93D | 0603 | 50V, X7R | Bootstrap capacitor |
-| C5 | 10µF | CL21A106KAYNNNE | 0805 | 16V, X7R | Output filter |
-| R1 | 100kΩ | RC0805FR-07100KL | 0805 | 1% | Feedback divider upper |
-| R2 | 22kΩ | RC0805FR-0722KL | 0805 | 1% | Feedback divider lower |
+| Ref | Value | Part Number | Package | Notes |
+|-----|-------|-------------|---------|-------|
+| U1 | AMS1117-3.3 | AMS1117-3.3 | SOT-223 | 5V→3.3V LDO, 1A max, powers peripherals |
+| C12 | 10µF | CL21A106KAYNNNE | 0805 | AMS1117 input capacitor (5V side) |
+| C13 | 22µF | CL21A226MAYLNNC | 0805 | AMS1117 output capacitor (3.3V side) |
 
-**MP2315 Output Voltage:**
+**AMS1117-3.3 Specs:**
 ```
-Vout = 0.6V × (1 + R1/R2)
-Vout = 0.6V × (1 + 100kΩ/22kΩ)
-Vout = 0.6V × 5.545
-Vout = 3.33V ✅
+Input:    5V (from ESP32 5V pin / USB)
+Output:   3.3V (fixed)
+Dropout:  1.1V typical (5V - 3.3V = 1.7V > 1.1V ✅)
+Load:     ~39mA (ADM2483 + LEDs + pull-ups)
+Max load: 1000mA (25x headroom)
+Heat:     (5V - 3.3V) × 0.039A = 0.066W (negligible)
 ```
 
-### ESP32-C3 Super Mini and Decoupling
+### ESP32-C3 Super Mini, Buttons, and Decoupling
 
 | Ref | Value | Part Number | Package | Notes |
 |-----|-------|-------------|---------|-------|
 | U2 | ESP32-C3 | ESP32-C3 Super Mini | Module | Pre-assembled board with USB-C |
-| C6 | 10µF | CL21A106KAYNNNE | 0805 | Additional power decoupling |
-| C7-C9 | 100nF | GRM188R71H104KA93D | 0603 | High-freq decoupling (3x) |
-| R3 | 10kΩ | RC0805FR-0710KL | 0805 | EN pull-up |
-| R4 | 10kΩ | RC0805FR-0710KL | 0805 | GPIO5 pull-up (debug button) |
-| SW1 | Reset | B3F-1000 | 6x6mm | Reset button (optional) |
-| SW2 | Debug | B3F-1000 | 6x6mm | Debug mode button |
-| C10 | 100nF | GRM188R71H104KA93D | 0603 | Debug button debounce |
+| C10 | 100nF | GRM188R71H104KA93D | 0603 | Debug button debounce capacitor |
+| R3 | 10kΩ | RC0805FR-0710KL | 0805 | EN pull-up to 3.3V_EXT |
+| R4 | 10kΩ | RC0805FR-0710KL | 0805 | GPIO5 pull-up (debug button) to 3.3V_EXT |
+| R11 | 10kΩ | RC0805FR-0710KL | 0805 | GPIO8 pull-up (mode switch) to 3.3V_EXT |
+| SW1 | Reset | B3F-1000 | 6x6mm | Reset button (press → EN to GND) |
+| SW2 | Debug | B3F-1000 | 6x6mm | Debug mode button (press → GPIO5 to GND) |
+| SW3 | Mode | SPDT toggle | 5mm | MONITOR/MASTER switch (GPIO8 to GND or float) |
 
-### RS-485 Interface
+### RS-485 Interface (Isolated)
 
 | Ref | Value | Part Number | Package | Notes |
 |-----|-------|-------------|---------|-------|
-| U3 | MAX3485 | MAX3485ESA+ | SOIC-8 | 3.3V RS-485 transceiver |
-| D4, D5 | TVS | PESD1CAN | SOT-23 | ESD protection on A, B lines |
-| C11 | 100nF | GRM188R71H104KA93D | 0603 | Noise filtering across A-B |
-| R5 | 120Ω | RC0805FR-07120RL | 0805 | Optional termination resistor |
+| U3 | ADM2483 | ADM2483 module | Breakout | 2.5kV isolated RS-485, 3.3V logic, built-in ESD |
+
+**Note:** Pre-made ADM2483 module includes all necessary components (isolated DC-DC, ESD protection, decoupling). No external TVS diodes, termination resistors, or filter caps needed — all built into the module.
 
 ### LED Drivers
 
@@ -320,9 +321,11 @@ Vout = 3.33V ✅
 
 | Ref | Type | Part Number | Pitch | Notes |
 |-----|------|-------------|-------|-------|
-| J1 | 3-pin screw | Phoenix 1757019 | 5mm | External serial cable |
-| J2 | 2-pin screw | Phoenix 1757019 | 5mm | RS-485 bus |
-| J3 | 2-pin screw | Phoenix 1757019 | 5mm | Power input |
+| J1 | 3-pin header | Pin header 2.54mm | 2.54mm | External serial cable (GND, TX, RX) — optional |
+| J2 | 2-pin screw | Phoenix 1757019 | 5mm | RS-485 bus (A, B) — via ADM2483 isolated |
+| USB-C | Built-in | On ESP32-C3 board | — | Power + programming + debug serial |
+
+**No external power connector needed** — USB-C provides all power.
 
 ---
 
@@ -332,32 +335,34 @@ Vout = 3.33V ✅
 
 | GPIO | Function | Direction | Connects To | Notes |
 |------|----------|-----------|-------------|-------|
-| **UART1 (RS-485 Bus)** |
-| GPIO6 | U1RXD | Input | MAX3485 RO | RS-485 receive |
-| GPIO7 | U1TXD | Output | MAX3485 DI | RS-485 transmit (unused) |
-| GPIO2 | DE/RE | Output | MAX3485 DE+RE | Held LOW (receive only) |
-| **UART0 (External Serial)** |
-| GPIO21 | U0TXD | Output | External RX | Serial cable TX |
-| GPIO20 | U0RXD | Input | External TX | Serial cable RX |
+| **UART1 (RS-485 Bus via ADM2483)** |
+| GPIO6 | U1RXD | Input | ADM2483 RO | RS-485 receive |
+| GPIO7 | U1TXD | Output | ADM2483 DI | RS-485 transmit |
+| GPIO2 | DE/RE | Output | ADM2483 DE+RE | Direction control (LOW=receive) |
+| **UART0 (External Serial / USB shared)** |
+| GPIO21 | U0TXD | Output | J1 Pin 2 | External serial TX (when USB disconnected) |
+| GPIO20 | U0RXD | Input | J1 Pin 3 | External serial RX (when USB disconnected) |
 | **LEDs (via transistors)** |
-| GPIO3 | LED | Output | Q1 base | Status LED (green) |
-| GPIO4 | LED | Output | Q2 base | Debug LED (red) |
-| **Buttons** |
-| GPIO5 | Button | Input | SW2 | Debug button (pull-up) |
-| EN | Reset | Input | SW1 | Hardware reset (pull-up) |
-| **USB (built-in)** |
-| GPIO18 | USB D- | Bidir | USB-C | Programming/debug |
-| GPIO19 | USB D+ | Bidir | USB-C | Programming/debug |
+| GPIO3 | LED | Output | R6 → Q1 base | Status LED (green) |
+| GPIO4 | LED | Output | R8 → Q2 base | Debug/Mode LED (red) |
+| **Buttons & Switches** |
+| GPIO5 | Button | Input | SW2 + R4 pullup | Debug button (active LOW) |
+| GPIO8 | Switch | Input | SW3 + R11 pullup | Mode switch (LOW=MONITOR, HIGH=MASTER) |
+| EN | Reset | Input | SW1 + R3 pullup | Hardware reset (active LOW) |
+| **USB (built-in, single cable)** |
+| GPIO18 | USB D- | Bidir | USB-C | Power + programming + debug serial |
+| GPIO19 | USB D+ | Bidir | USB-C | Power + programming + debug serial |
 | **Power** |
-| 3V3 | Power | Input | MP2315 output | 3.3V supply |
-| GND | Ground | - | Common GND | Ground reference |
+| 5V | Power Out | — | AMS1117-3.3 VIN | USB 5V → external LDO for peripherals |
+| 3V3 | Power Out | — | ESP32 chip only | Onboard regulator (not used for peripherals) |
+| GND | Ground | — | Common GND | Ground reference for all components |
 
 ---
 
 ## PCB Layout Guidelines
 
 ### Board Dimensions
-- **Size:** 60mm × 40mm
+- **Size:** 50mm × 35mm (optimized — no 12V power section)
 - **Layers:** 2 (top + bottom)
 - **Thickness:** 1.6mm standard
 - **Copper:** 1oz (35µm)
@@ -365,72 +370,55 @@ Vout = 3.33V ✅
 ### Component Placement Strategy
 
 ```
-Top View (60mm × 40mm):
+Top View (50mm × 35mm):
 
-┌─────────────────────────────────────────────────────────┐
-│                                                         │
-│  [J3: Power In]              [J2: RS-485]              │
-│   12V  GND                    A    B                    │
-│    │    │                     │    │                    │
-│  ┌─┴────┴─────────────────────┴────┴─────┐             │
-│  │ F1  D1  D3                             │             │
-│  │                                        │             │
-│  │ MP2315 Circuit:                        │             │
-│  │ [U1] [L1] [D2]                         │             │
-│  │ [C1][C2][C3][C4][C5]                   │             │
-│  │ [R1][R2]                               │             │
-│  └────────────────────────────────────────┘             │
-│                    │                                    │
-│                  3.3V                                   │
-│                    │                                    │
-│  ┌─────────────────┴──────────────────┐                │
-│  │  ESP32-C3 Super Mini               │                │
-│  │  [U2] (on pin headers)             │                │
-│  │  [C6][C7][C8][C9]                  │                │
-│  │                                    │                │
-│  │  USB-C ──────────────────────────► │  [Programming] │
-│  │                                    │                │
-│  └────────────────────────────────────┘                │
-│         │    │    │    │    │                          │
-│        G6   G7   G2  G21  G20                          │
-│         │    │    │    │    │                          │
-│  ┌──────┴────┴────┴────┴────┴──────┐                   │
-│  │  MAX3485 [U3]                   │                   │
-│  │  [D4][D5][C11][R5]              │                   │
-│  └─────────────────────────────────┘                   │
-│                                                         │
-│  [LED1]  [LED2]  [LED3]                                │
-│  Green   Red     Yellow                                │
-│  [Q1]    [Q2]                                          │
-│  [R6-R10]                                              │
-│                                                         │
-│  [SW1]   [SW2]                                         │
-│  Reset   Debug                                         │
-│  [R3]    [R4][C10]                                     │
-│                                                         │
-│  [J1: Serial Out]                                      │
-│   GND  TX  RX                                          │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│                                               │
+│  ┌─────────────────────────────────┐          │
+│  │  ESP32-C3 Super Mini [U2]      │          │
+│  │  (on pin headers)              │          │
+│  │                                │          │
+│  │  USB-C ◄───────────────────────┼── To PC  │
+│  │  (power + serial + prog)      │          │
+│  │                                │          │
+│  └─────────┬──────────────────────┘          │
+│            │ 5V pin                          │
+│    [C12]   │                                 │
+│    [U1: AMS1117-3.3]  ──► 3.3V_EXT          │
+│    [C13]                      │              │
+│                               │              │
+│  ┌────────────────────────────┴───┐          │
+│  │  ADM2483 Module [U3]          │          │
+│  │  (isolated RS-485)            │   [J2]   │
+│  │  VCC GND RO DI DE RE  ║  A B │──► A B   │
+│  └────────────────────────────────┘          │
+│                                               │
+│  [LED1]  [LED2]  [LED3]    [SW1] [SW2] [SW3]│
+│  Green   Red     Yellow    Reset Debug Mode  │
+│  [Q1]    [Q2]              [R3]  [R4]  [R11]│
+│  [R6][R7][R8][R9][R10]    [C10]              │
+│                                               │
+│  [J1: Serial Out]  (optional)                │
+│   GND  TX  RX                                │
+│                                               │
+└───────────────────────────────────────────────┘
 ```
 
 ### Critical Layout Rules
 
-#### 1. MP2315 Switching Circuit
-**Most critical section - follow these rules strictly:**
+#### 1. AMS1117-3.3 LDO Circuit
+**Simple layout — no switching noise concerns:**
 
-- **SW pin trace:** <10mm length, 1mm width minimum
-- **D2 placement:** Within 5mm of SW pin
-- **L1 placement:** Within 10mm of SW pin
-- **C3 placement:** Close to output, wide trace to load
-- **Ground plane:** Solid under IC, thermal relief on GND pin
-- **FB trace:** Route away from SW node, shield with GND
+- **C12 (input cap):** Place within 5mm of AMS1117 VIN pin
+- **C13 (output cap):** Place within 5mm of AMS1117 VOUT pin
+- **GND pad:** Wide trace to GND plane (SOT-223 tab is GND)
+- **Trace width:** 1mm minimum for 5V and 3.3V_EXT rails
 
 **Layout priority:**
 ```
-U1 (MP2315) → D2 (SS34) → L1 (22µH) → C3 (22µF) → Load
-     ↓
-   GND plane
+ESP32 5V pin → C12 → U1 (AMS1117) → C13 → 3.3V_EXT rail
+                           ↓
+                      GND plane
 ```
 
 #### 2. ESP32-C3 Antenna Area
@@ -445,11 +433,11 @@ U1 (MP2315) → D2 (SS34) → L1 (22µH) → C3 (22µF) → Load
 - **Decoupling caps:** Place within 5mm of IC power pins
 - **Via stitching:** Every 5mm around board perimeter
 
-#### 4. RS-485 Differential Pair
-- **Trace width:** 0.3mm
-- **Spacing:** 0.3mm (for 120Ω differential impedance)
-- **Length matching:** ±1mm
-- **Route together:** Minimize vias, avoid splits
+#### 4. RS-485 Connection (ADM2483 Module)
+- **Module placement:** Near board edge for short A/B wires to J2
+- **Logic signals:** Route GPIO2/6/7 directly to module pins
+- **No differential pair routing needed** — A/B are on the module itself
+- **Keep module away from antenna** — isolation DC-DC may emit EMI
 
 ### Layer Stack
 
@@ -469,125 +457,116 @@ U1 (MP2315) → D2 (SS34) → L1 (22µH) → C3 (22µF) → Load
 
 ## Assembly Instructions
 
-### Step 1: Power Supply Section
-1. Solder F1 (fuse), D1 (1N5819), D3 (SMBJ13A)
-2. Solder C1 (100µF input cap)
-3. Solder U1 (MP2315S) - watch orientation!
-4. Solder D2 (SS34) close to SW pin
-5. Solder L1 (22µH inductor)
-6. Solder R1, R2 (feedback divider)
-7. Solder C2, C3, C4, C5 (output caps)
-8. **Test:** Apply 12V, measure 3.30-3.35V output
+### Step 1: AMS1117-3.3 Power Section
+1. Solder U1 (AMS1117-3.3) — watch orientation (tab=GND)
+2. Solder C12 (10µF input cap) close to VIN
+3. Solder C13 (22µF output cap) close to VOUT
+4. Wire 5V trace from ESP32 5V pin pad to U1 VIN
+5. **Test:** Connect ESP32 via USB, measure 3.30-3.35V on 3.3V_EXT rail
 
 ### Step 2: ESP32-C3 Module
 1. Solder pin headers to PCB (if using sockets)
 2. Insert ESP32-C3 Super Mini into headers
-3. Solder C6, C7, C8, C9 (decoupling caps) close to module
-4. **Test:** Connect USB-C, verify PC recognizes device
+3. **Test:** Connect USB-C, verify PC recognizes device (COM port appears)
 
-### Step 3: RS-485 Interface
-1. Solder U3 (MAX3485) - watch pin 1 orientation
-2. Solder D4, D5 (TVS diodes)
-3. Solder C11 (100nF filter cap)
-4. Solder R5 (120Ω termination, if needed)
-5. **Test:** Check continuity, no shorts
+### Step 3: ADM2483 Isolated RS-485 Module
+1. Mount ADM2483 module (pin headers or direct solder)
+2. Wire: VCC → 3.3V_EXT, GND → common GND
+3. Wire: RO → GPIO6, DI → GPIO7, DE+RE → GPIO2
+4. Wire: A/B → J2 screw terminal
+5. **Test:** Check continuity, no shorts between logic and bus sides
 
-### Step 4: LEDs and Buttons
-1. Solder Q1, Q2 (transistors) - watch EBC pinout
+### Step 4: LEDs, Buttons, and Mode Switch
+1. Solder Q1, Q2 (2N3904 transistors) — watch EBC pinout
 2. Solder R6-R10 (resistors)
-3. Solder LED1, LED2, LED3 - **watch polarity!**
-4. Solder SW1, SW2 (buttons)
-5. Solder R3, R4 (pull-ups), C10 (debounce)
-6. **Test:** Apply power, yellow LED should light
+3. Solder LED1, LED2, LED3 — **watch polarity!**
+4. Solder SW1 (reset), SW2 (debug button), SW3 (mode switch)
+5. Solder R3, R4, R11 (10kΩ pull-ups to 3.3V_EXT)
+6. Solder C10 (100nF debounce on GPIO5)
+7. **Test:** Connect USB, yellow power LED should light
 
 ### Step 5: Connectors
-1. Solder J1, J2, J3 (screw terminals)
-2. Label connections clearly
+1. Solder J1 (3-pin header for external serial — optional)
+2. Solder J2 (2-pin screw terminal for RS-485 bus)
 3. **Test:** Continuity check all connections
 
 ### Step 6: Final Testing
 1. Visual inspection (no solder bridges)
-2. Continuity test (GND plane, power rails)
-3. Power-on test (measure voltages)
-4. Flash test firmware via USB-C
-5. Test serial output
-6. Connect to RS-485 bus and verify reception
+2. Continuity test (GND plane, 5V rail, 3.3V_EXT rail)
+3. Power-on test: USB-C → measure 5V on 5V pin, 3.3V on 3.3V_EXT
+4. Flash firmware via USB-C (PlatformIO: `pio run --target upload`)
+5. Open serial monitor — verify boot message appears
+6. Press debug button — verify WiFi AP starts
+7. Connect J2 to RS-485 bus — verify packet reception
 
 ---
 
 ## Firmware Pin Configuration
 
-**Update `main.cpp` with new pin definitions:**
+**Current pin definitions in `src/main.cpp`:**
 
 ```cpp
-/* ═══════════════════════════════════════════════════════════════════════
- *  PIN DEFINITIONS — ESP32-C3 Super Mini
- * ═══════════════════════════════════════════════════════════════════════ */
-
-/* RS-485 pins (UART1) — to Orion bus via MAX3485 */
-#define RS485_TX_PIN   7     /* GPIO7 - UART1 TX (unused in passive mode) */
+/* RS-485 pins (UART1) — to Orion bus via ADM2483 */
+#define RS485_TX_PIN   7     /* GPIO7 - UART1 TX */
 #define RS485_RX_PIN   6     /* GPIO6 - UART1 RX */
-#define RS485_DE_PIN   2     /* GPIO2 - MAX3485 DE+RE (held LOW = receive only) */
+#define RS485_DE_PIN   2     /* GPIO2 - ADM2483 DE+RE (LOW = receive only) */
 
-/* Serial output to external system (UART0) — for cable connection */
+/* Serial output to external system (UART0) */
 #define EXT_SERIAL_TX_PIN  21   /* GPIO21 - UART0 TX */
 #define EXT_SERIAL_RX_PIN  20   /* GPIO20 - UART0 RX */
 #define EXT_SERIAL_BAUD    115200
 
 /* LED indicators */
-#define STATUS_LED_PIN  3    /* GPIO3 - Status indicator (green LED via Q1) */
-#define DEBUG_LED_PIN   4    /* GPIO4 - Debug mode indicator (red LED via Q2) */
+#define STATUS_LED_PIN  3    /* GPIO3 - Status (green LED via Q1) */
+#define DEBUG_LED_PIN   4    /* GPIO4 - Debug/Mode (red LED via Q2) */
 
 /* Debug button (pull-up, active LOW) */
-#define DEBUG_BUTTON_PIN  5  /* GPIO5 - Separate debug button */
+#define DEBUG_BUTTON_PIN  5  /* GPIO5 - Debug button */
 
-/* UART initialization in setup() */
-void setup() {
-    // USB serial (UART0) for debugging
-    Serial.begin(115200);
-    
-    // RS-485 bus (UART1)
-    Serial1.begin(9600, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-    
-    // Note: External serial uses same UART0 as USB
-    // When USB is connected, external serial is unavailable
-    // When USB is disconnected, UART0 is available for external serial
-    
-    // ... rest of setup code
-}
+/* Mode switch (pull-up, active LOW) */
+#define MODE_SWITCH_PIN   8  /* GPIO8 - MONITOR/MASTER switch */
 ```
 
-**Important UART note for ESP32-C3:**
-- ESP32-C3 has only 2 UARTs (UART0 and UART1)
-- UART0 is shared between USB and external serial
-- When USB is connected, external serial won't work
-- For production, disconnect USB and use UART0 for external serial
+**UART note for ESP32-C3:**
+- `Serial` = USB CDC (built-in USB serial via GPIO18/19) — always available when USB connected
+- `Serial1` = UART1 (GPIO6/7) — used for RS-485 bus via ADM2483
+- UART0 (GPIO20/21) shared with USB — available for external serial only when USB disconnected
 
 ---
 
-## Power Budget (ESP32-C3 + MP2315)
+## Power Budget (USB-Powered)
+
+### ESP32 Onboard Regulator (powers ESP32 chip)
 
 | Component | Current (mA) | Notes |
 |-----------|--------------|-------|
 | ESP32-C3 (idle) | 43 | WiFi off, light sleep |
 | ESP32-C3 (active) | 80 | WiFi off, CPU active |
-| ESP32-C3 (WiFi TX) | 180 | Peak during transmission |
-| MAX3485 | 0.5 | Receive mode |
-| LEDs (3x @ 2mA) | 6 | Status, debug, power |
-| **Total (idle)** | **50mA** | Typical operation |
-| **Total (WiFi on)** | **187mA** | Peak with WiFi |
+| ESP32-C3 (WiFi AP on) | 200 | Peak during WiFi TX |
+| **Onboard regulator load** | **80-200mA** | Well within 500mA limit |
 
-**12V input current (at 95% MP2315 efficiency):**
-- Idle: 50mA × 3.3V / 12V / 0.95 = **14.5mA**
-- WiFi on: 187mA × 3.3V / 12V / 0.95 = **54mA**
+### AMS1117-3.3 (powers peripherals via 3.3V_EXT)
 
-**Power consumption:**
-- Idle: 50mA × 3.3V = **165mW**
-- WiFi on: 187mA × 3.3V = **617mW**
+| Component | Current (mA) | Notes |
+|-----------|--------------|-------|
+| ADM2483 logic side | 15 | Isolated RS-485 module |
+| LED1 (green, status) | 10 | Via Q1 transistor driver |
+| LED2 (red, debug) | 10 | Via Q2 transistor driver |
+| LED3 (yellow, power) | 3 | Always on, direct drive |
+| Pull-up resistors (R3,R4,R11) | 1 | 3x 10kΩ to 3.3V_EXT |
+| **AMS1117 load** | **~39mA** | 1000mA capacity (25x headroom) |
 
-**MP2315 heat dissipation:**
-- Power loss = 617mW × (1 - 0.95) = **31mW**
-- Temperature rise = 31mW × 150°C/W = **4.6°C** (no heatsink needed!)
+### USB Total Draw
+
+| Mode | USB Current (mA) | Notes |
+|------|-------------------|-------|
+| Idle (WiFi off) | ~125 | ESP32 80mA + peripherals 39mA + USB ctrl 6mA |
+| Active (WiFi AP on) | ~245 | ESP32 200mA + peripherals 39mA + USB ctrl 6mA |
+| **USB 2.0 limit** | **500mA** | **Margin: 255-375mA** |
+
+### AMS1117 Heat Dissipation
+- Power loss: (5V - 3.3V) × 0.039A = **0.066W** (negligible)
+- No heatsink needed
 
 ---
 
@@ -595,62 +574,67 @@ void setup() {
 
 | Problem | Possible Cause | Solution |
 |---------|----------------|----------|
-| **No 3.3V output** | MP2315 not working | Check 12V input, check R1/R2 values, check L1 orientation |
-| **3.3V too low (<3.2V)** | Wrong feedback resistors | Verify R1=100kΩ, R2=22kΩ |
-| **3.3V too high (>3.4V)** | Wrong feedback resistors | Check R1/R2 solder joints |
-| **ESP32-C3 won't boot** | Insufficient decoupling | Add more caps, check C6-C9 placement |
-| **USB not recognized** | USB pins damaged | Check GPIO18/19, try different cable |
-| **No RS-485 reception** | Wrong A/B wiring | Swap A and B connections |
-| **High CRC errors** | Noise on bus | Add ferrite beads, check grounding |
-| **LEDs don't light** | Transistor not switching | Check Q1/Q2 orientation (EBC pinout) |
-| **Debug button not working** | Wrong GPIO or no pull-up | Verify GPIO5, check R4 (10kΩ) |
-| **WiFi won't connect** | Antenna issue | Check clear zone around antenna |
-| **MP2315 overheating** | Wrong inductor or short | Check L1 value (22µH), check for shorts |
+| **No 3.3V_EXT output** | AMS1117 not working | Check 5V on ESP32 5V pin, check C12/C13, check solder joints |
+| **ESP32-C3 won't boot** | USB cable issue | Try different USB-C cable (data+power, not charge-only) |
+| **USB not recognized** | Driver issue | Install ESP32-C3 USB driver, try different USB port |
+| **No RS-485 reception** | Wrong A/B wiring | Swap A and B connections on J2 |
+| **RS-485 no data** | ADM2483 not powered | Verify 3.3V_EXT on ADM2483 VCC pin |
+| **RS-485 ground loop** | Isolation broken | Verify ADM2483 GND_ISO not connected to ESP32 GND |
+| **High CRC errors** | Noise on bus | Check A/B wiring, ensure twisted pair cable |
+| **LEDs don't light** | Transistor wrong | Check Q1/Q2 orientation (EBC pinout for 2N3904) |
+| **Power LED off** | No 3.3V_EXT | Check AMS1117 output, check R10 and LED3 polarity |
+| **Debug button no effect** | Pull-up missing | Verify R4 (10kΩ) to 3.3V_EXT, check GPIO5 wiring |
+| **Mode switch no effect** | Pull-up missing | Verify R11 (10kΩ) to 3.3V_EXT, check GPIO8 wiring |
+| **WiFi AP won't start** | Antenna blocked | Keep 5mm clear zone around ESP32-C3 antenna area |
+| **ESP32 resets randomly** | Insufficient power | Try USB 3.0 port (900mA), check for shorts |
 
 ---
 
-## Advantages Summary
+## Design Summary
 
-### ESP32-C3 Super Mini
-✅ **$1.50** vs $3-4 (50% cheaper)
-✅ **43mA idle** vs 80mA (46% less power)
-✅ **Built-in USB-C** (no external programmer)
-✅ **Smaller size** (22.52x18mm)
-✅ **Modern RISC-V** architecture
+### USB-Powered Architecture
+- **Single USB-C cable** — power + programming + debug serial
+- **AMS1117-3.3 LDO** — robust 3.3V for peripherals (39mA load, 1A capacity)
+- **ADM2483 isolated RS-485** — 2.5kV galvanic isolation, safe ground loop protection
+- **No external PSU** — eliminates 12V power section entirely
 
-### MP2315 Buck Converter
-✅ **95% efficient** vs 92% (LM2596S)
-✅ **$0.30** vs $1.20 (75% cheaper)
-✅ **Tiny footprint** (TSOT23-6)
-✅ **500kHz switching** (smaller passives)
-✅ **Cool operation** (<5°C rise)
+### Component Count (Optimized)
 
-### Overall Design
-✅ **60x40mm PCB** vs 80x50mm (33% smaller)
-✅ **$9-10 total cost** vs $15-22 (40% cheaper)
-✅ **Lower power** (50mA vs 90mA idle)
-✅ **Professional quality** with protection circuits
+| Category | Components | Count |
+|----------|-----------|-------|
+| Power | AMS1117-3.3, C12, C13 | 3 |
+| MCU | ESP32-C3 Super Mini | 1 |
+| RS-485 | ADM2483 module | 1 |
+| LEDs | Q1, Q2, R6-R10, LED1-3 | 10 |
+| Buttons | SW1-SW3, R3, R4, R11, C10 | 7 |
+| Connectors | J1, J2 | 2 |
+| **Total** | | **24 components** |
+
+### Key Specs
+- **Board size:** 50x35mm
+- **Total cost:** ~$8-9 per unit (including PCB)
+- **Power draw:** 125-245mA from USB 2.0 (500mA available)
+- **Isolation:** 2.5kV between ESP32 and Orion RS-485 bus
 
 ---
 
 ## Files and Documentation
 
-- `BOM_ESP32C3_optimized.md` - Complete bill of materials
-- `esp32c3_schematic_final.md` - This file (circuit diagram)
-- `main.cpp` - Firmware (needs pin updates for ESP32-C3)
+- `docs/BOM_complete.md` — Complete bill of materials
+- `docs/esp32c3_schematic_final.md` — This file (circuit diagram + pinout)
+- `firmware/esp32_orion_slave/src/main.cpp` — Firmware (pin definitions match this schematic)
 
 ---
 
 ## Next Steps
 
-1. **Order components** - See BOM_ESP32C3_optimized.md
-2. **Design PCB** - Use KiCad, follow layout guidelines
-3. **Fabricate PCB** - JLCPCB ($5 for 5 boards)
-4. **Assemble** - Follow assembly instructions
-5. **Update firmware** - Change pin definitions for ESP32-C3
-6. **Test** - Follow testing procedure
-7. **Deploy** - Install and connect to Orion system
+1. **Order components** — See `BOM_complete.md` (ADM2483 module is the key part)
+2. **Design PCB** — Use KiCad, follow layout guidelines above
+3. **Fabricate PCB** — JLCPCB ($5 for 5 boards, 50x35mm 2-layer)
+4. **Assemble** — Follow assembly instructions (6 steps)
+5. **Flash firmware** — `pio run --target upload` via USB-C
+6. **Test** — Verify USB serial, WiFi AP, RS-485 reception
+7. **Deploy** — Connect to Orion bus via J2, monitor via USB serial
 
-**Estimated time:** 2-3 hours assembly + 1 hour firmware update + 1 hour testing
-
-**Total cost:** ~$10 per unit (including PCB)
+**Estimated time:** 1-2 hours assembly + 30min flash + 30min testing
+**Total cost:** ~$8-9 per unit (including PCB fabrication)
