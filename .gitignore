@@ -9,6 +9,7 @@
 
 # CMake build artifacts
 pc/build/
+pc/**/build_*/
 pc/cmake-build-*/
 pc/CMakeFiles/
 pc/CMakeCache.txt
@@ -17,16 +18,20 @@ pc/Makefile
 pc/install_manifest.txt
 pc/compile_commands.json
 
-# Compiled binaries
-pc/*.exe
-pc/*.out
-pc/*.o
-pc/*.obj
-pc/*.a
-pc/*.lib
-pc/*.so
-pc/*.dll
-pc/*.dylib
+# Compiled binaries (all subdirectories)
+pc/**/*.exe
+pc/**/*.out
+pc/**/*.o
+pc/**/*.obj
+pc/**/*.a
+pc/**/*.lib
+pc/**/*.so
+pc/**/*.dll
+pc/**/*.dylib
+pc/**/*.elf
+pc/**/*.bin
+pc/**/*.hex
+pc/**/*.map
 
 # ─────────────────────────────────────────────────────────────────────
 # ESP32 Firmware (PlatformIO)
@@ -139,6 +144,10 @@ uart_*.log
 **/keys.h
 **/orion_keys.txt
 
+# Runtime config files (contain sensitive data)
+pc/**/orion_proxy.ini
+!pc/**/orion_proxy.ini.example
+
 # ─────────────────────────────────────────────────────────────────────
 # Documentation Build Artifacts
 # ─────────────────────────────────────────────────────────────────────
@@ -150,6 +159,9 @@ docs/doxygen_warnings.txt
 
 # Markdown preview temp files
 docs/**/*.html
+
+# Keep GUI/dashboard files (not docs)
+!pc/**/gui/*.html
 
 # ─────────────────────────────────────────────────────────────────────
 # Hardware Design Files (Optional - uncomment if using KiCad/Eagle)

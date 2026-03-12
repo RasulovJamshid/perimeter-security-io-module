@@ -75,10 +75,10 @@ static void default_print_packet(const orion_packet_t *pkt,
         }
 
         /* Try to identify known status bytes */
-        if (payload_len >= 8) {
+        if (payload_len >= 7) {
             printf("\n       status1=0x%02X (%s)  status2=0x%02X (%s)",
-                   dec.payload[6], orion_status_str(dec.payload[6]),
-                   dec.payload[7], orion_status_str(dec.payload[7]));
+                   dec.payload[5], orion_status_str(dec.payload[5]),
+                   dec.payload[6], orion_status_str(dec.payload[6]));
         }
     }
 

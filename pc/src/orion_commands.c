@@ -67,25 +67,24 @@ int orion_cmd_read_status(orion_ctx_t *ctx, uint8_t address,
 
     /*
      * Response layout (after decryption, offsets within payload):
-     *   [0] key_xor
-     *   [1] unknown (0x88 seen)
-     *   [2] unknown (0x02 seen)
-     *   [3] message_key
-     *   [4] unknown
-     *   [5] unknown
-     *   [6] STATUS_1
-     *   [7] STATUS_2
-     *   [8] unknown
+     *   [0] key_xor (GLOBAL_KEY ^ MESSAGE_KEY, not decrypted)
+     *   [1] echo byte (0x02 seen)
+     *   [2] message_key echo
+     *   [3] unknown (0x04 seen)
+     *   [4] unknown (0x03 seen)
+     *   [5] STATUS_1
+     *   [6] STATUS_2
+     *   [7] unknown (0xC8 seen)
      *
-     * Note: offsets may vary by device type. The status bytes
-     * are typically at positions 6 and 7 in the decrypted payload.
+     * Verified against Habr Bolid Orion reverse-engineering article.
+     * Note: offsets may vary slightly by device type and firmware.
      */
-    if (payload_len >= 8) {
-        status->status1 = response.payload[6];
-        status->status2 = response.payload[7];
-    } else if (payload_len >= 7) {
+    if (payload_len >= 7) {
         status->status1 = response.payload[5];
         status->status2 = response.payload[6];
+    } else if (payload_len >= 6) {
+        status->status1 = response.payload[4];
+        status->status2 = response.payload[5];
     }
 
     printf("[orion] Device %d status: 0x%02X (%s), 0x%02X (%s)\n",
