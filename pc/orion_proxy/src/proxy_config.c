@@ -338,6 +338,6 @@ void config_print_usage(const char *prog)
         "  telnet localhost 9100\n"
         "  Then type HELP for available commands.\n"
         "\n",
-        prog, prog, prog, prog
+        prog, prog, prog, prog, prog
     );
 }

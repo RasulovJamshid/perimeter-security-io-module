@@ -10,7 +10,11 @@
 # CMake build artifacts
 pc/build/
 pc/**/build_*/
+pc/**/build-*/
+pc/**/dist/
 pc/cmake-build-*/
+pc/**/orion-proxy-*-linux-*/
+pc/**/orion-proxy-*.tar.gz
 pc/CMakeFiles/
 pc/CMakeCache.txt
 pc/cmake_install.cmake

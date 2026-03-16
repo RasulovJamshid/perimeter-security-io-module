@@ -9,11 +9,13 @@ if(MSVC)
     add_definitions(-D_WIN32_WINNT=0x0501 -DWINVER=0x0501)
 endif()
 
-# Static linking option for Linux portability (optional)
-option(STATIC_BUILD "Build with static linking for better portability" OFF)
+# Static linking option for Linux portability
+# Produces a self-contained binary with no GLIBC version dependency
+option(STATIC_BUILD "Build fully static binary for portability" OFF)
 if(STATIC_BUILD AND UNIX AND NOT APPLE)
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
     set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+    add_definitions(-DSTATIC_BUILD)
 endif()
 
 # Include the parent orion_bolid library
